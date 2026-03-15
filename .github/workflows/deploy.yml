@@ -1,0 +1,26 @@
+name: Deploy Scout
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: cd /opt/scout && git pull
+
+      - name: Stop containers
+        run: cd /opt/scout && docker compose down
+
+      - name: Prune old images
+        run: docker system prune -f
+
+      - name: Build and start
+        run: cd /opt/scout && docker compose up --build -d
+
+      - name: Health check
+        run: |
+          sleep 10
+          curl -sf http://localhost:8020/health || exit 1

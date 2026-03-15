@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "homelab": {
+      "command": "node",
+      "args": ["C:/Users/Михаил/.agent-context/homelab-proxy.js"]
+    },
+    "agent-context": {
+      "command": "node",
+      "args": ["C:/Users/Михаил/.agent-context/server.js"]
+    }
+  }
+}
