@@ -25,7 +25,7 @@ class AnthropicBriefer(BaseBriefer):
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 
-    async def generate_brief(self, context: str, topic: str) -> dict:
+    async def generate_brief(self, context: str, topic: str, *, model: str | None = None) -> dict:
         """Generate brief. Returns dict with brief, model, tokens_used."""
         prompt = (
             f"Тема исследования: {topic}\n\n"
@@ -33,9 +33,10 @@ class AnthropicBriefer(BaseBriefer):
             "Составь структурированный brief по этой теме на основе контекста выше."
         )
 
+        effective_model = model or self._model
         try:
             response = await self._client.messages.create(
-                model=self._model,
+                model=effective_model,
                 max_tokens=4096,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
@@ -44,9 +45,9 @@ class AnthropicBriefer(BaseBriefer):
             tokens = response.usage.input_tokens + response.usage.output_tokens
             logger.info(
                 "Brief generated: {} chars, {} tokens ({})",
-                len(text), tokens, self._model,
+                len(text), tokens, effective_model,
             )
-            return {"brief": text, "model": self._model, "tokens_used": tokens}
+            return {"brief": text, "model": effective_model, "tokens_used": tokens}
         except Exception as exc:
             logger.error("AnthropicBriefer failed: {}", exc)
-            return {"brief": None, "model": self._model, "tokens_used": None}
+            return {"brief": None, "model": effective_model, "tokens_used": None}

@@ -135,10 +135,12 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-015 | rostelecom-videosurveillance | ✅ выполнена |
 | SC-016 | collector-level1 | ✅ выполнена |
 | SC-017 | collector-level2-playwright | ✅ выполнена |
-| SC-017.1 | auto-market-russia (v2) | 🔲 backlog |
+| SC-017.1 | auto-market-russia (v2) | ✅ выполнена |
 | SC-017.2 | apartments-russia | ✅ выполнена |
+| SC-017.3 | inflation-russia | ✅ выполнена |
 | SC-018 | local-file-collector | 🔲 backlog |
 | SC-019 | reranker | ✅ выполнена |
+| SC-020 | scout-research-tool | 🔨 в работе |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -161,4 +163,4 @@ curl -s -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (SC-019 done — CrossEncoder reranker, candidates_k=max(top_k*5,50), RERANKER_ENABLED flag)*
+*Обновлено: 2026-03-17 (SC-017.3 done — инфляция/ставка ЦБ РФ 2024-2025, 203 docs, 720 chunks, brief Haiku 23k токенов)*

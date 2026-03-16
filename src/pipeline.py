@@ -152,6 +152,7 @@ class ScoutPipeline:
         session_id: UUID,
         query: str,
         top_k: int = 10,
+        model: str | None = None,
     ) -> dict:
         """Search + generate LLM brief."""
         package = await self.search(session_id, query, top_k)
@@ -170,7 +171,7 @@ class ScoutPipeline:
             for r in package.results
         )
 
-        result = await self._briefer.generate_brief(context, package.topic)
+        result = await self._briefer.generate_brief(context, package.topic, model=model)
         result["sources_used"] = len(package.results)
         return result
 
