@@ -1,142 +1,101 @@
-# SC-007 — Deploy: Dockerfile, CI/CD, сервер
+# SC-007 — Deploy: первый деплой через CI/CD
+
+## Текущее состояние (уже сделано)
+
+- ✅ `/opt/scout` на сервере — клонирован, `.env` заполнен
+- ✅ GitHub Actions runner `scout-homelab` — зарегистрирован и запущен как systemd-сервис
+- ✅ `deploy.yml` — настроен, триггер на push в `main`
+- ⬜ Код не запушен — всё что написано с SC-002 по SC-006 лежит локально
 
 ## Цель
 
-Задеплоить Scout на сервер (`/opt/scout`) через GitHub Actions. После этой задачи
-Scout MCP-сервер доступен по адресу `http://100.81.243.12:8020` и автоматически
-переразворачивается при push в `main`.
+Запушить накопленный код → CI подхватывает → контейнеры поднимаются →
+проверить что всё работает.
 
 ---
 
-## Контекст
+## Флоу деплоя (единственный правильный способ)
 
-Паттерн деплоя идентичен LocOll: self-hosted GitHub Actions runner уже установлен
-на сервере (`/home/flomaster/actions-runner/`). При push в `main` runner делает
-`git pull` → `docker compose up --build -d`. Нужно подключить Scout к тому же
-runner и создать GitHub-репозиторий.
+```
+git add . → git commit → git push origin main
+    ↓
+GitHub Actions runner scout-homelab на сервере подхватывает push
+    ↓
+CI: git fetch + reset --hard → docker compose up --build -d
+    ↓
+CI: health check (curl /health) + smoke test (tools/list)
+    ↓
+Проверяем результат через homelab MCP
+```
 
-Перед деплоем проверить что порты 8020 и 5436 свободны.
+**Агент не трогает сервер вручную.** Только git push.
 
 ---
 
 ## Шаги выполнения
 
-### 1. Финальный Dockerfile
-
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# Зависимости слоем до кода — для кэширования Docker layers
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# sentence-transformers при первом запуске скачивает модель — кэшируем в слой
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
-
-COPY . .
-
-CMD ["python", "mcp_server.py"]
-```
-
-Загрузка модели в слой сборки критична — иначе при каждом старте контейнера
-300MB скачиваются заново (~2 минуты).
-
-### 2. .github/workflows/deploy.yml
-
-```yaml
-name: Deploy Scout
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: self-hosted
-    steps:
-      - name: Pull latest code
-        run: |
-          cd /opt/scout
-          git fetch origin main
-          git reset --hard origin/main
-
-      - name: Deploy
-        run: |
-          cd /opt/scout
-          docker compose down
-          docker system prune -f
-          docker compose up --build -d
-
-      - name: Health check
-        run: |
-          sleep 10
-          curl -f http://localhost:8020/health || exit 1
-          echo "Scout MCP is up"
-```
-
-### 3. Первичная настройка на сервере (через paramiko)
+### Шаг 1 — Закоммитить и запушить накопленный код
 
 ```bash
-# Создать директорию
-sudo mkdir -p /opt/scout
-sudo chown flomaster:flomaster /opt/scout
-
-# Клонировать репозиторий
-cd /opt/scout && git clone https://github.com/Mdyuzhev/Scout.git .
-
-# Создать .env из примера и заполнить секреты
-cp .env.example .env
-# POSTGRES_PASSWORD, ANTHROPIC_API_KEY — вставить вручную или через paramiko
-
-# Первый запуск
-docker compose up --build -d
-
-# Проверка
-curl http://localhost:8020/health
-docker compose ps
+git add .
+git commit -m "feat: SC-002..SC-006 — data models, ingestion, retrieval, MCP server, postgres"
+git push origin main
 ```
 
-### 4. Регистрация runner для репозитория Scout
+### Шаг 2 — Убедиться что CI прошёл
 
-Runner уже запущен как systemd-сервис. Нужно добавить Scout-репозиторий:
-```bash
-cd /home/flomaster/actions-runner
-./config.sh --url https://github.com/Mdyuzhev/Scout --token TOKEN
-```
-
-Или использовать organization runner если он настроен для всех репозиториев.
-
-### 5. Проверка после деплоя
+Проверить через homelab MCP (`run_shell_command`):
 
 ```bash
-# Статусы контейнеров
-docker compose -f /opt/scout/docker-compose.yml ps
-
-# Логи MCP сервера
-docker logs scout-mcp --tail 50
+# Статус контейнеров
+docker ps --filter name=scout --format "{{.Names}} {{.Status}}"
 
 # Health check
-curl http://localhost:8020/health
+curl -s http://localhost:8020/health
 
-# Тест MCP инструмента через paramiko с рабочей машины
-curl -X POST http://100.81.243.12:8020/tools/scout_list_sessions \
+# Логи если что-то не так
+docker logs scout-mcp --tail 50
+```
+
+### Шаг 3 — Добавить ANTHROPIC_API_KEY в .env
+
+Ключ пуст — `scout_brief` не будет работать без него. Добавить через homelab MCP:
+
+```bash
+# Получить ключ из переменных окружения других проектов (например moex)
+grep ANTHROPIC_API_KEY /opt/moex/.env
+
+# Вставить в scout .env
+sed -i 's/ANTHROPIC_API_KEY=/ANTHROPIC_API_KEY=sk-ant-.../' /opt/scout/.env
+
+# Перезапустить scout-mcp чтобы подхватил новый ключ
+cd /opt/scout && docker compose restart scout-mcp
+```
+
+### Шаг 4 — Smoke test end-to-end
+
+Через homelab MCP (`run_shell_command`):
+
+```bash
+# Список инструментов
+curl -s -X POST http://localhost:8020/mcp \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | python3 -c "import sys,json; tools=json.load(sys.stdin); print([t['name'] for t in tools.get('result',{}).get('tools',[])])"
+
+# PostgreSQL
+docker exec scout-postgres psql -U scout_user -d scout_db -c "\dt"
 ```
 
 ---
 
 ## Критерии готовности
 
-- `docker compose ps` показывает `scout-mcp` и `scout-postgres` в статусе `running/healthy`
-- `curl http://100.81.243.12:8020/health` возвращает 200 с Windows-машины
-- Push в `main` триггерит деплой через GitHub Actions без ошибок
-- Полный цикл end-to-end: `scout_index` → `scout_search` → `scout_brief` работает
-  на задеплоенном сервере
+- `git push` → Actions workflow проходит без ошибок
+- `scout-mcp` и `scout-postgres` в статусе `running/healthy`
+- `curl http://localhost:8020/health` → `{"status":"ok"}`
+- Список инструментов содержит `scout_index`, `scout_search`, `scout_brief`
 
 ---
 
-*Дата создания: 2026-03-16*
+*Дата создания: 2026-03-16 | Обновлено: 2026-03-16 (runner и /opt/scout уже готовы, осталось только запушить)*

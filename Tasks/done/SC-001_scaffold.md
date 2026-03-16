@@ -188,3 +188,29 @@ cp .env.example .env
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- Создана структура `src/` с 5 модулями (ingestion, chunking, retrieval, llm, storage) и `__init__.py`
+- Создан `tests/` с `__init__.py`
+- `requirements.txt` — 11 зависимостей (fastmcp, httpx, bs4, sentence-transformers, chromadb, asyncpg, pydantic, anthropic, openai, loguru, python-dotenv)
+- `.env.example` — все переменные окружения
+- `Dockerfile` — python:3.12-slim, предзагрузка модели эмбеддингов в слой сборки
+- `docker-compose.yml` — scout-mcp (network_mode: host) + scout-postgres (порт 5436)
+- `mcp_server.py` — FastMCP с 3 заглушками + `/health` endpoint
+- `.github/workflows/deploy.yml` — CI на self-hosted runner
+- Деплой на сервер: оба контейнера running, health 200
+
+**Отклонения от плана:**
+- FastMCP 2.0+ не принимает `description=` в конструкторе — убран
+- `transport="streamable-http"` заменён на `transport="http"`
+- `custom_route` требует `JSONResponse` из starlette вместо dict return
+- Был конфликт имени контейнера scout-postgres (старый) — удалён и пересоздан
+
+**Обнаруженные проблемы (перешли в следующие задачи):**
+- docker-automation-worker-1, docker-notification-worker-1, docker-generator-1 — unhealthy (не относится к Scout)

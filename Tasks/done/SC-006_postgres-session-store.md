@@ -157,3 +157,23 @@ docker exec scout-postgres psql -U scout_user -d scout_db -f /migrations/001_ini
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- Создана миграция `migrations/001_initial.sql` — таблица `research_sessions` с tsvector + GIN
+- Реализован `SessionStore` (asyncpg pool, upsert, find_similar по tsvector, list_recent)
+- Добавлен `postgres_dsn` property в `Settings`
+- `ScoutPipeline` переведён на PostgreSQL — in-memory dict заменён на `SessionStore`
+- Логика кэша: `find_similar()` проверяет историю перед запуском пайплайна
+- `search()` и `get_session()` стали async (через `SessionStore.get()`)
+- Добавлен MCP-инструмент `scout_list_sessions`
+- docker-compose: migrations монтируются в `initdb.d` для авто-инициализации
+- 34/34 тестов pass (добавлены test_index_returns_cached, test_list_sessions)
+
+**Отклонения от плана:**
+- Шаг 4 (миграция на сервере) отложен до SC-007 deploy — контейнеры ещё не запущены

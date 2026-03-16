@@ -1,0 +1,231 @@
+"""Smoke-тесты SC-003 — ingestion pipeline."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from types import ModuleType
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from src.config import Chunk, Document, ResearchConfig, SourceType
+
+# Stub chromadb for environments where it's not installed
+if "chromadb" not in sys.modules:
+    _chromadb = ModuleType("chromadb")
+    _chromadb.PersistentClient = MagicMock  # type: ignore[attr-defined]
+    sys.modules["chromadb"] = _chromadb
+    _ef_mod = ModuleType("chromadb.utils")
+    sys.modules["chromadb.utils"] = _ef_mod
+    _ef_mod2 = ModuleType("chromadb.utils.embedding_functions")
+    _ef_mod2.SentenceTransformerEmbeddingFunction = MagicMock  # type: ignore[attr-defined]
+    sys.modules["chromadb.utils.embedding_functions"] = _ef_mod2
+from src.chunking.sliding_window import SlidingWindowChunker
+from src.ingestion.web import WebCollector
+
+
+# ---------------------------------------------------------------------------
+# WebCollector tests
+# ---------------------------------------------------------------------------
+
+
+def _make_html(title: str, body: str) -> str:
+    return f"<html><head><title>{title}</title></head><body><main>{body}</main></body></html>"
+
+
+@pytest.fixture
+def mock_httpx_client():
+    """Patch httpx.AsyncClient so no real HTTP calls are made."""
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+class TestWebCollector:
+    def test_collect_specific_urls(self, mock_httpx_client):
+        """SPECIFIC_URLS mode: fetches listed URLs, returns Documents."""
+        page_html = _make_html("Test Page", "A" * 100)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = page_html
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_resp)
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://example.com/page1"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+            collector = WebCollector()
+            docs = asyncio.run(collector.collect(config))
+
+        assert len(docs) >= 1
+        assert all(isinstance(d, Document) for d in docs)
+        assert docs[0].title == "Test Page"
+
+    def test_collect_deduplicates(self, mock_httpx_client):
+        """Duplicate pages (same content_hash) are skipped."""
+        page_html = _make_html("Page", "Same content here. " * 10)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = page_html
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_resp)
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://a.com/1", "http://b.com/2"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+            collector = WebCollector()
+            docs = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1  # second page deduplicated
+
+    def test_collect_skips_errors(self, mock_httpx_client):
+        """HTTP errors are logged and skipped, not raised."""
+        mock_httpx_client.get = AsyncMock(side_effect=httpx.ConnectError("fail"))
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://broken.com"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+            collector = WebCollector()
+            docs = asyncio.run(collector.collect(config))
+
+        assert docs == []
+
+
+# ---------------------------------------------------------------------------
+# SlidingWindowChunker tests
+# ---------------------------------------------------------------------------
+
+
+class TestSlidingWindowChunker:
+    def test_chunk_basic(self):
+        """2000-word document → ~5 chunks with default params (500w, 100 overlap)."""
+        doc = Document(
+            url="http://example.com",
+            title="Test Doc",
+            content=" ".join(f"word{i}" for i in range(2000)),
+        )
+        chunker = SlidingWindowChunker(window_size=500, overlap=100)
+        chunks = chunker.chunk(doc)
+
+        assert len(chunks) == 5
+        assert all(isinstance(c, Chunk) for c in chunks)
+
+    def test_chunk_no_empty(self):
+        """No empty chunks produced."""
+        doc = Document(
+            url="http://example.com",
+            title="Test",
+            content="short text here",
+        )
+        chunker = SlidingWindowChunker(window_size=500, overlap=100)
+        chunks = chunker.chunk(doc)
+
+        assert len(chunks) == 1
+        assert all(len(c.text.strip()) > 0 for c in chunks)
+
+    def test_chunk_preserves_source(self):
+        """Chunks carry source_url and source_title from Document."""
+        doc = Document(
+            url="http://example.com/page",
+            title="My Title",
+            content=" ".join(["word"] * 1000),
+        )
+        chunker = SlidingWindowChunker()
+        chunks = chunker.chunk(doc)
+
+        for c in chunks:
+            assert c.source_url == "http://example.com/page"
+            assert c.source_title == "My Title"
+
+    def test_chunk_empty_document(self):
+        """Empty content → no chunks."""
+        doc = Document(url="http://x.com", title="Empty", content="")
+        chunker = SlidingWindowChunker()
+        assert chunker.chunk(doc) == []
+
+    def test_chunk_overlap_works(self):
+        """Adjacent chunks share overlapping words."""
+        words = [f"w{i}" for i in range(100)]
+        doc = Document(
+            url="http://x.com",
+            title="T",
+            content=" ".join(words),
+        )
+        chunker = SlidingWindowChunker(window_size=60, overlap=20)
+        chunks = chunker.chunk(doc)
+
+        assert len(chunks) >= 2
+        words_0 = set(chunks[0].text.split())
+        words_1 = set(chunks[1].text.split())
+        overlap = words_0 & words_1
+        assert len(overlap) > 0
+
+
+# ---------------------------------------------------------------------------
+# Indexer tests (mocked ChromaDB)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexer:
+    def test_index_creates_collection(self):
+        """Indexer creates collection and adds chunks."""
+        with patch("src.ingestion.indexer.chromadb") as mock_chroma, \
+             patch("src.ingestion.indexer.SentenceTransformerEmbeddingFunction"):
+            mock_collection = MagicMock()
+            mock_collection.count.return_value = 5
+            mock_client = MagicMock()
+            mock_client.get_or_create_collection.return_value = mock_collection
+            mock_chroma.PersistentClient.return_value = mock_client
+
+            from src.ingestion.indexer import Indexer
+
+            indexer = Indexer(chroma_path="/tmp/test_chroma", model_name="test-model")
+            chunks = [
+                Chunk(text=f"chunk {i}", source_url="http://x.com", source_title="X")
+                for i in range(5)
+            ]
+            session_id = uuid4()
+            count = indexer.index(chunks, session_id)
+
+            assert count == 5
+            mock_client.get_or_create_collection.assert_called_once()
+            mock_collection.add.assert_called_once()
+
+    def test_index_batches_large_input(self):
+        """Chunks > 100 are split into batches."""
+        with patch("src.ingestion.indexer.chromadb") as mock_chroma, \
+             patch("src.ingestion.indexer.SentenceTransformerEmbeddingFunction"):
+            mock_collection = MagicMock()
+            mock_client = MagicMock()
+            mock_client.get_or_create_collection.return_value = mock_collection
+            mock_chroma.PersistentClient.return_value = mock_client
+
+            from src.ingestion.indexer import Indexer
+
+            indexer = Indexer(chroma_path="/tmp/test", model_name="m")
+            chunks = [
+                Chunk(text=f"c{i}", source_url="http://x.com", source_title="X")
+                for i in range(250)
+            ]
+            count = indexer.index(chunks, uuid4())
+
+            assert count == 250
+            assert mock_collection.add.call_count == 3  # 100+100+50

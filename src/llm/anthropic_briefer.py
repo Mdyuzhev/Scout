@@ -2,12 +2,51 @@
 
 from __future__ import annotations
 
+import anthropic
+from loguru import logger
+
 from .base import BaseBriefer
+
+_SYSTEM_PROMPT = (
+    "Ты — аналитик-исследователь. Тебе предоставлен контекст из нескольких "
+    "источников по заданной теме. Твоя задача — синтезировать ключевые выводы "
+    "в структурированный brief на языке запроса. Используй ТОЛЬКО информацию "
+    "из предоставленного контекста. Не выдумывай факты. Если данных недостаточно — "
+    "укажи это явно."
+)
+
+_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 class AnthropicBriefer(BaseBriefer):
-    """Generate research briefs using Anthropic Claude."""
+    """Generate research briefs using Anthropic Claude Haiku."""
 
-    async def generate_brief(self, context: str, topic: str) -> str:
-        # TODO: implement in SC-005
-        raise NotImplementedError("AnthropicBriefer not yet implemented")
+    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL):
+        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        self._model = model
+
+    async def generate_brief(self, context: str, topic: str) -> dict:
+        """Generate brief. Returns dict with brief, model, tokens_used."""
+        prompt = (
+            f"Тема исследования: {topic}\n\n"
+            f"Контекст из источников:\n\n{context}\n\n"
+            "Составь структурированный brief по этой теме на основе контекста выше."
+        )
+
+        try:
+            response = await self._client.messages.create(
+                model=self._model,
+                max_tokens=2048,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text
+            tokens = response.usage.input_tokens + response.usage.output_tokens
+            logger.info(
+                "Brief generated: {} chars, {} tokens ({})",
+                len(text), tokens, self._model,
+            )
+            return {"brief": text, "model": self._model, "tokens_used": tokens}
+        except Exception as exc:
+            logger.error("AnthropicBriefer failed: {}", exc)
+            return {"brief": None, "model": self._model, "tokens_used": None}

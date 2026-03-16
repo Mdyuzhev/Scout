@@ -9,18 +9,25 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Pull latest code
-        run: cd /opt/scout && git pull
-
-      - name: Stop containers
-        run: cd /opt/scout && docker compose down
-
-      - name: Prune old images
-        run: docker system prune -f
+        run: |
+          cd /opt/scout
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Build and start
-        run: cd /opt/scout && docker compose up --build -d
+        run: |
+          cd /opt/scout
+          docker compose up --build -d
 
       - name: Health check
         run: |
-          sleep 10
+          sleep 15
           curl -sf http://localhost:8020/health || exit 1
+          echo "✅ Scout MCP is up"
+
+      - name: Smoke test
+        run: |
+          curl -sf -X POST http://localhost:8020/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
+            grep -q "scout_index" && echo "✅ MCP tools OK" || exit 1

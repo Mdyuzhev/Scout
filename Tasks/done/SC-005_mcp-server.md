@@ -125,3 +125,19 @@ if __name__ == "__main__":
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- `ScoutPipeline` (src/pipeline.py) — оркестратор: index → search → brief, in-memory сессии
+- `AnthropicBriefer` (src/llm/anthropic_briefer.py) — генерация brief через Claude Haiku, системный промпт аналитика
+- `mcp_server.py` — три инструмента: scout_index, scout_search, scout_brief с полными параметрами
+- 7 тестов pipeline + briefer, 32/32 total pass
+- CLAUDE.md обновлён (pipeline.py, test_pipeline.py в структуре)
+
+**Отклонения от плана:**
+- Выполнено в соответствии с планом

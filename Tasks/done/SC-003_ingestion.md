@@ -125,3 +125,21 @@ class Indexer:
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- `WebCollector` — полная реализация: DuckDuckGo HTML search, httpx fetch, BS4 очистка, дедупликация по content_hash
+- `SlidingWindowChunker` — скользящее окно (500 слов, 100 overlap), использует `Chunk` из config.py
+- `Indexer` — ChromaDB batch-индексация (батчи по 100), session-scoped коллекции
+- `BaseChunker` приведён к единой модели `Chunk` из config.py (убран дублирующий Chunk из chunking/base.py)
+- `BaseCollector` сигнатура приведена в соответствие со спецификацией
+- 10 smoke-тестов: 3 WebCollector (specific_urls, dedup, error handling), 5 SlidingWindowChunker (basic, no_empty, source, empty_doc, overlap), 2 Indexer (collection, batching)
+- Все 17 тестов проекта pass (7 SC-002 + 10 SC-003)
+
+**Отклонения от плана:**
+- Стабы из SC-001 имели расходящиеся сигнатуры (web.py: AsyncIterator вместо list, chunking/base.py: свой Chunk) — приведены к единой архитектуре из задачи

@@ -12,7 +12,6 @@
       "Agent(*)",
       "mcp__homelab__*",
       "mcp__agent-context__*",
-      "mcp__plugin_context7_context7__*",
       "mcp__scout__*"
     ],
     "deny": []

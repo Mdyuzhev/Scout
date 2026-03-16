@@ -144,3 +144,22 @@ class ResearchPackage(BaseModel):
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- 4 enum: DepthLevel, SourceType, LLMProvider, SessionStatus
+- ResearchConfig — входные параметры исследования с валидацией
+- Document — сырой документ с auto content_hash (sha256)
+- Chunk — единица индексации с auto UUID id
+- ResearchSession — рабочее состояние с chroma_collection_name property
+- SearchResult — результат поиска
+- ResearchPackage — выходной артефакт с brief
+- 7 тестов в tests/test_config.py — все проходят (4 warnings о datetime.utcnow deprecation)
+
+**Отклонения от плана:**
+- Выполнено в соответствии с планом

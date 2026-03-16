@@ -87,3 +87,18 @@ class ContextBuilder:
 ---
 
 *Дата создания: 2026-03-16*
+
+---
+
+## ✅ Статус: ВЫПОЛНЕНА
+
+**Дата завершения:** 2026-03-16
+
+**Что сделано:**
+- `Searcher` — семантический поиск по ChromaDB, нормализация distance → similarity, фильтрация по min_similarity, SessionNotFoundError
+- `ContextBuilder` — сборка ResearchPackage, сортировка по similarity, дедупликация (макс. 3 чанка с одного source_url)
+- 8 тестов в `tests/test_retrieval.py` — все проходят
+- Обновлён CLAUDE.md (статус, структура тестов)
+
+**Отклонения от плана:**
+- Выполнено в соответствии с планом
