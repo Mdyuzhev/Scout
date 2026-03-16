@@ -140,7 +140,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-017.3 | inflation-russia | ✅ выполнена |
 | SC-018 | local-file-collector | 🔲 backlog |
 | SC-019 | reranker | ✅ выполнена |
-| SC-020 | scout-research-tool | 🔨 в работе |
+| SC-020 | scout-research-tool | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
