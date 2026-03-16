@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import random
 import re
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -15,6 +16,7 @@ from loguru import logger
 from src.config import DepthLevel, Document, ResearchConfig, SourceType
 
 from .base import BaseCollector
+from .playwright_fetcher import PlaywrightFetcher
 
 _DEPTH_PAGES: dict[DepthLevel, int] = {
     DepthLevel.QUICK: 15,
@@ -61,6 +63,29 @@ _BLOCKED_DOMAINS: frozenset[str] = frozenset([
 
 _REQUEST_TIMEOUT = 10.0
 _MAX_CONCURRENT = 10
+
+_PLAYWRIGHT_ENABLED = os.getenv("PLAYWRIGHT_ENABLED", "true").lower() == "true"
+
+# Признаки Cloudflare JS-challenge в ответе httpx
+_CF_INDICATORS = [
+    "cf-browser-verification",
+    "challenge-platform",
+    "cf_clearance",
+    "Just a moment",
+    "Enable JavaScript",
+    "Checking your browser",
+]
+
+
+def _needs_playwright(status_code: int, text: str) -> bool:
+    """Определить нужен ли Playwright fallback по ответу httpx."""
+    if status_code == 403:
+        return True
+    if status_code == 200 and len(text) < 500:
+        return True
+    if any(indicator in text for indicator in _CF_INDICATORS):
+        return True
+    return False
 
 
 def _random_headers() -> dict:
@@ -240,6 +265,8 @@ class WebCollector(BaseCollector):
     async def _fetch_page(
         self, client: httpx.AsyncClient, url: str
     ) -> Document | None:
+        raw_text: str | None = None
+
         for attempt in range(2):
             try:
                 resp = await client.get(url, headers=_random_headers())
@@ -254,7 +281,21 @@ class WebCollector(BaseCollector):
                 if resp.status_code == 503 and attempt == 0:
                     await asyncio.sleep(random.uniform(2, 5))
                     continue
-                resp.raise_for_status()
+
+                # 403 — не вызываем raise_for_status, пробуем Playwright
+                if resp.status_code == 403:
+                    if _PLAYWRIGHT_ENABLED:
+                        raw_text = ""  # пустой текст → _needs_playwright вернёт True
+                    else:
+                        resp.raise_for_status()
+                else:
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("content-type", "")
+                    if "text/html" not in content_type:
+                        logger.debug("Skipping non-HTML content at {}", url)
+                        return None
+                    raw_text = resp.text
+
             except httpx.HTTPError as exc:
                 if attempt == 0:
                     logger.debug("Retry {} после ошибки: {}", url, exc)
@@ -263,12 +304,15 @@ class WebCollector(BaseCollector):
                 logger.warning("Failed to fetch {}: {}", url, exc)
                 return None
 
-            content_type = resp.headers.get("content-type", "")
-            if "text/html" not in content_type:
-                logger.debug("Skipping non-HTML content at {}", url)
-                return None
+            # Playwright fallback
+            if _PLAYWRIGHT_ENABLED and raw_text is not None and _needs_playwright(resp.status_code, raw_text):
+                logger.debug("Playwright fallback для {}", url)
+                html = await PlaywrightFetcher.fetch(url)
+                if html is None:
+                    return None
+                raw_text = html
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            soup = BeautifulSoup(raw_text or "", "html.parser")
             title = soup.title.string.strip() if soup.title and soup.title.string else url
 
             for tag in soup.find_all(_REMOVE_TAGS):

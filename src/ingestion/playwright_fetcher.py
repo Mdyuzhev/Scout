@@ -1,0 +1,79 @@
+"""Playwright-based fetcher for JS-rendered pages."""
+from __future__ import annotations
+
+import asyncio
+
+from loguru import logger
+
+
+class PlaywrightFetcher:
+    """Fetches pages that require JS execution."""
+
+    # Singleton браузер — создаётся один раз, живёт весь прогон
+    _browser = None
+    _playwright = None
+
+    @classmethod
+    async def ensure_started(cls) -> None:
+        """Ленивая инициализация браузера."""
+        if cls._browser is None:
+            from playwright.async_api import async_playwright
+
+            cls._playwright = await async_playwright().start()
+            cls._browser = await cls._playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-extensions",
+                ],
+            )
+            logger.info("Playwright Chromium запущен")
+
+    @classmethod
+    async def close(cls) -> None:
+        if cls._browser:
+            await cls._browser.close()
+            await cls._playwright.stop()
+            cls._browser = None
+            cls._playwright = None
+
+    @classmethod
+    async def fetch(cls, url: str, timeout_ms: int = 15_000) -> str | None:
+        """
+        Загрузить страницу через реальный браузер.
+        Возвращает HTML или None при ошибке.
+        """
+        await cls.ensure_started()
+        try:
+            context = await cls._browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                locale="ru-RU",
+                viewport={"width": 1280, "height": 800},
+                java_script_enabled=True,
+            )
+            page = await context.new_page()
+
+            # Блокировать тяжёлые ресурсы — ускоряет загрузку
+            await page.route(
+                "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,ico}",
+                lambda route: route.abort(),
+            )
+
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+            # Подождать пока исчезнет Cloudflare spinner если есть
+            await asyncio.sleep(2)
+
+            html = await page.content()
+            await context.close()
+            return html
+
+        except Exception as exc:
+            logger.warning("Playwright failed for {}: {}", url, exc)
+            return None

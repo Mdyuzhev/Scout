@@ -5,6 +5,7 @@ WORKDIR /app
 # Зависимости отдельным слоем — Docker кэширует если requirements.txt не менялся
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install chromium --with-deps \
     && rm -rf /root/.cache/pip
 
 # Предзагрузка модели в слой сборки — иначе 300MB будут скачиваться при каждом старте

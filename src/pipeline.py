@@ -16,6 +16,7 @@ from src.config import (
     settings,
 )
 from src.ingestion.indexer import Indexer
+from src.ingestion.playwright_fetcher import PlaywrightFetcher
 from src.ingestion.web import WebCollector
 from src.llm.anthropic_briefer import AnthropicBriefer
 from src.retrieval.context_builder import ContextBuilder
@@ -97,6 +98,7 @@ class ScoutPipeline:
             session.error = str(exc)
             logger.error("Index failed for session {}: {}", session.id, exc)
         finally:
+            await PlaywrightFetcher.close()
             await self._session_store.save(session)
 
         return session, failed_urls, blocked_count

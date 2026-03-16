@@ -62,7 +62,8 @@ class TestWebCollector:
             source_urls=["http://example.com/page1"],
         )
 
-        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client), \
+             patch("src.ingestion.web._PLAYWRIGHT_ENABLED", False):
             collector = WebCollector()
             docs, failed, blocked = asyncio.run(collector.collect(config))
 
@@ -87,7 +88,8 @@ class TestWebCollector:
             source_urls=["http://a.com/1", "http://b.com/2"],
         )
 
-        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client), \
+             patch("src.ingestion.web._PLAYWRIGHT_ENABLED", False):
             collector = WebCollector()
             docs, failed, blocked = asyncio.run(collector.collect(config))
 
@@ -143,7 +145,8 @@ class TestWebCollector:
             "http://good3.com",
         ]
 
-        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client), \
+             patch("src.ingestion.web._PLAYWRIGHT_ENABLED", False):
             collector = WebCollector()
             docs, failed = asyncio.run(
                 collector._fetch_all(mock_httpx_client, urls)
@@ -193,6 +196,80 @@ class TestWebCollector:
                     "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site"}
         assert required.issubset(headers.keys())
         assert "Mozilla" in headers["User-Agent"]
+
+    def test_needs_playwright_403(self):
+        """_needs_playwright returns True on 403."""
+        from src.ingestion.web import _needs_playwright
+
+        assert _needs_playwright(403, "") is True
+        assert _needs_playwright(403, "some content") is True
+
+    def test_needs_playwright_short_200(self):
+        """_needs_playwright returns True for suspiciously short 200 responses."""
+        from src.ingestion.web import _needs_playwright
+
+        assert _needs_playwright(200, "x" * 499) is True
+        assert _needs_playwright(200, "x" * 500) is False
+
+    def test_needs_playwright_cf_indicators(self):
+        """_needs_playwright detects Cloudflare challenge indicators."""
+        from src.ingestion.web import _needs_playwright
+
+        assert _needs_playwright(200, "Just a moment... " * 50) is True
+        assert _needs_playwright(200, "Enable JavaScript and cookies to continue " * 50) is True
+        assert _needs_playwright(200, "Checking your browser before accessing " * 50) is True
+        assert _needs_playwright(200, "Normal content " * 50) is False
+
+    def test_playwright_disabled_no_fallback(self, mock_httpx_client):
+        """When PLAYWRIGHT_ENABLED=false, Playwright fallback is not called on 403."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError(
+            "403", request=MagicMock(), response=mock_resp
+        ))
+        mock_httpx_client.get = AsyncMock(return_value=mock_resp)
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://protected.com"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client), \
+             patch("src.ingestion.web._PLAYWRIGHT_ENABLED", False), \
+             patch("src.ingestion.web.PlaywrightFetcher.fetch") as mock_pw:
+            collector = WebCollector()
+            docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        mock_pw.assert_not_called()
+        assert docs == []
+
+    def test_playwright_fallback_on_403(self, mock_httpx_client):
+        """When httpx gets 403, Playwright fetches the page and document is created."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_resp)
+
+        playwright_html = "<html><head><title>Protected Page</title></head><body><main>" + "content " * 50 + "</main></body></html>"
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://protected.com"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client), \
+             patch("src.ingestion.web._PLAYWRIGHT_ENABLED", True), \
+             patch("src.ingestion.web.PlaywrightFetcher.fetch", new=AsyncMock(return_value=playwright_html)):
+            collector = WebCollector()
+            docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1
+        assert docs[0].title == "Protected Page"
+        assert failed == []
 
 
 # ---------------------------------------------------------------------------
