@@ -129,6 +129,7 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 | SC-014 | batch-ai-tools | ✅ выполнена |
 | SC-009 | connect-llm-brief | ✅ выполнена |
 | SC-015 | rostelecom-videosurveillance | ✅ выполнена |
+| SC-016 | collector-level1 | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -150,4 +151,4 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (SC-015 done — 136 URL, 65 docs, 299 chunks, brief сохранён в results/. SSE parse fix: искать data: построчно, брать structuredContent)*
+*Обновлено: 2026-03-16 (SC-016 done — collector level 1: UA rotation, random delays, stop-list 20 domains, retry 429/503, blocked_count в ответе)*
