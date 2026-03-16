@@ -127,7 +127,7 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 | SC-012 | batch-200-urls | ✅ выполнена |
 | SC-013 | batch-500-urls | ✅ выполнена |
 | SC-014 | batch-ai-tools | ✅ выполнена |
-| SC-009 | connect-llm-brief | 🔲 в очереди |
+| SC-009 | connect-llm-brief | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -141,6 +141,9 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 - Тянуть новые модели Ollama
 - LLM на этапе сбора/фильтрации (только финальный шаг)
 - curl к MCP без заголовка `Accept: application/json, text/event-stream`
+- Вызывать Anthropic API без прокси — обязательно `HTTP_PROXY=http://localhost:8888` (vpn_proxy контейнер, порт 8888)
+- docker restart для обновления env_file — использовать `docker compose -p scout up -d --force-recreate --no-deps scout-mcp`
+- Брать ANTHROPIC_API_KEY из других проектов (/opt/moex/.env и т.д.) — только от пользователя явно
 
 ---
 
