@@ -37,6 +37,8 @@ def _make_pipeline():
     p._chunker = MagicMock()
     p._indexer = MagicMock()
     p._searcher = MagicMock()
+    p._reranker = MagicMock()
+    p._reranker.rerank = MagicMock(side_effect=lambda query, results, top_k: results[:top_k])
     p._context_builder = MagicMock()
     p._briefer = None
     p._initialized = True

@@ -138,7 +138,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-017.1 | auto-market-russia (v2) | 🔲 backlog |
 | SC-017.2 | apartments-russia | ✅ выполнена |
 | SC-018 | local-file-collector | 🔲 backlog |
-| SC-019 | reranker | 🔲 backlog |
+| SC-019 | reranker | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -161,4 +161,4 @@ curl -s -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (SC-017.2 done — квартиры РФ: 112 docs, verify=False httpx, SSE-шаблон)*
+*Обновлено: 2026-03-16 (SC-019 done — CrossEncoder reranker, candidates_k=max(top_k*5,50), RERANKER_ENABLED flag)*

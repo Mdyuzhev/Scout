@@ -20,6 +20,7 @@ from src.ingestion.playwright_fetcher import PlaywrightFetcher
 from src.ingestion.web import WebCollector
 from src.llm.anthropic_briefer import AnthropicBriefer
 from src.retrieval.context_builder import ContextBuilder
+from src.retrieval.reranker import Reranker
 from src.retrieval.searcher import Searcher
 from src.storage.session_store import SessionStore
 
@@ -35,6 +36,7 @@ class ScoutPipeline:
         self._chunker = SlidingWindowChunker()
         self._indexer = Indexer(chroma_path=chroma, model_name=model)
         self._searcher = Searcher(chroma_path=chroma, model_name=model)
+        self._reranker = Reranker()
         self._context_builder = ContextBuilder()
         self._briefer = (
             AnthropicBriefer(api_key=settings.anthropic_api_key)
@@ -120,12 +122,19 @@ class ScoutPipeline:
         if session is None:
             raise KeyError(f"Session {session_id} not found")
 
-        results = self._searcher.search(
+        # Расширенный захват: берём top-50 кандидатов вместо top_k
+        # Реранкер отберёт лучшие top_k из них
+        candidates_k = max(top_k * 5, 50)
+
+        candidates = self._searcher.search(
             query=query,
             session_id=session_id,
-            top_k=top_k,
+            top_k=candidates_k,
             min_similarity=session.config.min_similarity,
         )
+
+        # Реранкинг: CrossEncoder переоценивает кандидатов, возвращает top_k
+        results = self._reranker.rerank(query=query, results=candidates, top_k=top_k)
 
         return self._context_builder.build(
             session=session,
