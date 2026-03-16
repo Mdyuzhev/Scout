@@ -89,6 +89,7 @@ class SessionStore:
                 """
                 SELECT * FROM research_sessions
                 WHERE status = 'ready'
+                  AND documents_count > 0
                   AND created_at > NOW() - make_interval(hours => $2)
                   AND search_vector @@ plainto_tsquery('russian', $1)
                 ORDER BY created_at DESC
