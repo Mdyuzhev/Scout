@@ -1,7 +1,9 @@
 """Scout MCP Server — entrypoint."""
 
+import asyncio
 import os
-from uuid import UUID
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
 from loguru import logger
@@ -11,6 +13,9 @@ from src.pipeline import ScoutPipeline
 
 mcp = FastMCP("Scout")
 pipeline = ScoutPipeline()
+
+# In-memory job tracker for async research jobs
+_jobs: dict[str, dict] = {}
 
 
 @mcp.tool()
@@ -108,12 +113,7 @@ async def scout_brief(
     Args:
         model: LLM model — "haiku" (default), "sonnet", or "opus"
     """
-    model_map = {
-        "haiku":  "claude-haiku-4-5-20251001",
-        "sonnet": "claude-sonnet-4-6",
-        "opus":   "claude-opus-4-6",
-    }
-    llm_model = model_map.get(model, model_map["haiku"])
+    llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
     sid = UUID(session_id)
     result = await pipeline.brief(sid, query, top_k, model=llm_model)
     result["sources_used"] = result.get("sources_used", 0)
@@ -160,13 +160,7 @@ async def scout_research(
     """
     from src.config import SourceType
 
-    # Выбор модели: короткое имя → полная строка
-    model_map = {
-        "haiku":  "claude-haiku-4-5-20251001",
-        "sonnet": "claude-sonnet-4-6",
-        "opus":   "claude-opus-4-6",
-    }
-    llm_model = model_map.get(model, model_map["haiku"])
+    llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
 
     # Шаг 1: индексация
     logger.info("scout_research: indexing {} URLs for '{}'", len(source_urls), topic)
@@ -234,6 +228,234 @@ async def scout_research(
         # Файл
         "saved_to":        saved_path,
     }
+
+
+MODEL_MAP = {
+    "haiku":  "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-6",
+}
+
+TEST_BATCH_SIZE = 10
+
+
+async def _run_research_job(
+    job_id: str,
+    topic: str,
+    source_urls: list[str],
+    query: str,
+    top_k: int,
+    llm_model: str,
+    language: str,
+    save_to: str | None,
+) -> None:
+    """Background coroutine: test 10 URLs → full indexing → brief."""
+    from src.config import SourceType
+
+    job = _jobs[job_id]
+
+    def _update(stage: str, **kw):
+        job["stage"] = stage
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+        job.update(kw)
+        logger.info("job {}: {}", job_id[:8], stage)
+
+    try:
+        # ── Stage 1: test batch (first 10 URLs) ─────────────────────
+        test_urls = source_urls[:TEST_BATCH_SIZE]
+        _update("test_indexing", message=f"Тест: индексация {len(test_urls)} URL из {len(source_urls)}")
+
+        test_config = ResearchConfig(
+            topic=f"[test] {topic}",
+            depth=DepthLevel.NORMAL,
+            language=language,
+            llm_provider=LLMProvider.ANTHROPIC,
+            cache_ttl_hours=0,
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=test_urls,
+        )
+        test_session, test_failed, test_blocked = await pipeline.index(test_config)
+
+        if test_session.status.value != "ready" or test_session.documents_count == 0:
+            _update(
+                "test_failed",
+                status="failed",
+                error=f"Тест провален: {test_session.documents_count} docs, "
+                      f"{len(test_failed)} failed, status={test_session.status.value}",
+            )
+            return
+
+        _update(
+            "test_passed",
+            test_docs=test_session.documents_count,
+            test_chunks=test_session.chunks_count,
+            test_failed=len(test_failed),
+            message=f"Тест пройден: {test_session.documents_count} docs, "
+                    f"{test_session.chunks_count} chunks. Запускаю полный пул.",
+        )
+
+        # ── Stage 2: full indexing ───────────────────────────────────
+        _update("full_indexing", message=f"Индексация {len(source_urls)} URL...")
+
+        full_config = ResearchConfig(
+            topic=topic,
+            depth=DepthLevel.NORMAL,
+            language=language,
+            llm_provider=LLMProvider.ANTHROPIC,
+            cache_ttl_hours=0,
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=source_urls,
+        )
+        session, failed_urls, blocked_count = await pipeline.index(full_config)
+
+        if session.status.value != "ready" or session.documents_count == 0:
+            _update(
+                "indexing_failed",
+                status="failed",
+                error=f"Индексация провалена: {session.documents_count} docs, "
+                      f"{len(failed_urls)} failed",
+                session_id=str(session.id),
+            )
+            return
+
+        _update(
+            "indexing_done",
+            session_id=str(session.id),
+            documents_count=session.documents_count,
+            chunks_count=session.chunks_count,
+            failed_count=len(failed_urls),
+            blocked_count=blocked_count,
+            message=f"Индексация завершена: {session.documents_count} docs, "
+                    f"{session.chunks_count} chunks, {len(failed_urls)} failed.",
+        )
+
+        # ── Stage 3: brief generation ───────────────────────────────
+        _update("generating_brief", message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
+
+        result = await pipeline.brief(session.id, query, top_k, model=llm_model)
+        brief_text = result.get("brief", "")
+
+        # ── Stage 4: save to disk if requested ──────────────────────
+        saved_path = None
+        if save_to and brief_text:
+            try:
+                os.makedirs(os.path.dirname(save_to), exist_ok=True)
+                with open(save_to, "w", encoding="utf-8") as f:
+                    f.write(f"# {topic}\n\n")
+                    f.write(f"**Модель**: {result.get('model')}  \n")
+                    f.write(f"**Токены**: {result.get('tokens_used')}  \n")
+                    f.write(f"**Источников**: {result.get('sources_used', 0)}  \n")
+                    f.write(f"**Session ID**: {session.id}  \n\n---\n\n")
+                    f.write(brief_text)
+                saved_path = save_to
+            except Exception as e:
+                logger.warning("job {}: failed to save brief: {}", job_id[:8], e)
+
+        _update(
+            "completed",
+            status="completed",
+            brief=brief_text,
+            model=result.get("model"),
+            tokens_used=result.get("tokens_used"),
+            sources_used=result.get("sources_used", 0),
+            saved_to=saved_path,
+            message=f"Готово! {session.documents_count} docs, "
+                    f"{result.get('tokens_used')} tokens, model={result.get('model')}",
+        )
+
+    except Exception as exc:
+        _update("error", status="failed", error=str(exc))
+        logger.error("job {} failed: {}", job_id[:8], exc)
+
+
+@mcp.tool()
+async def scout_research_async(
+    topic: str,
+    source_urls: list[str],
+    query: str,
+    top_k: int = 15,
+    model: str = "haiku",
+    language: str = "ru",
+    save_to: str | None = None,
+) -> dict:
+    """Start a background research job: test 10 URLs first, then full pipeline.
+
+    Returns immediately with a job_id. Poll progress with scout_job_status(job_id).
+
+    Pipeline stages (reported in scout_job_status):
+      1. test_indexing  → test first 10 URLs
+      2. test_passed / test_failed  → stop if test fails
+      3. full_indexing  → index all URLs
+      4. generating_brief  → LLM synthesis
+      5. completed / error
+
+    Args:
+        topic:       Research topic
+        source_urls: Full list of URLs (first 10 used for test)
+        query:       Research question for the brief
+        top_k:       Chunks for LLM context (default 15)
+        model:       "haiku", "sonnet", or "opus"
+        language:    "ru" or "en"
+        save_to:     Optional server path for brief markdown
+    """
+    llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
+    job_id = str(uuid4())
+
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "topic": topic,
+        "total_urls": len(source_urls),
+        "query": query,
+        "model": model,
+        "status": "running",
+        "stage": "queued",
+        "message": f"Задача создана: {len(source_urls)} URL, тест на {TEST_BATCH_SIZE}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    asyncio.create_task(_run_research_job(
+        job_id, topic, source_urls, query, top_k, llm_model, language, save_to,
+    ))
+
+    logger.info("scout_research_async: job {} created ({} URLs)", job_id[:8], len(source_urls))
+
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "message": f"Фоновая задача запущена. Сначала тест на {TEST_BATCH_SIZE} URL, "
+                   f"затем полный пул ({len(source_urls)} URL). "
+                   f"Отслеживайте: scout_job_status(job_id='{job_id}')",
+    }
+
+
+@mcp.tool()
+async def scout_job_status(job_id: str) -> dict:
+    """Check progress of a background research job.
+
+    Returns current stage, status, and all accumulated metrics.
+    Stages: queued → test_indexing → test_passed → full_indexing →
+            indexing_done → generating_brief → completed
+    Status: "running", "completed", or "failed"
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        return {"error": f"Job {job_id} not found", "known_jobs": list(_jobs.keys())}
+    return {k: v for k, v in job.items() if k != "brief" or job.get("status") == "completed"}
+
+
+@mcp.tool()
+async def scout_job_result(job_id: str) -> dict:
+    """Get the full result (including brief text) of a completed background job.
+
+    Use scout_job_status first to check if the job is completed.
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        return {"error": f"Job {job_id} not found"}
+    if job.get("status") != "completed":
+        return {"error": f"Job not completed yet. Stage: {job.get('stage')}", "status": job.get("status")}
+    return dict(job)
 
 
 @mcp.tool()
