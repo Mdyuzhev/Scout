@@ -36,7 +36,7 @@ class AnthropicBriefer(BaseBriefer):
         try:
             response = await self._client.messages.create(
                 model=self._model,
-                max_tokens=2048,
+                max_tokens=4096,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
