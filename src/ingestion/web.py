@@ -134,7 +134,7 @@ class WebCollector(BaseCollector):
             logger.info("Пропущено {} URL из стоп-листа: {}", len(blocked), blocked[:5])
 
         async with httpx.AsyncClient(
-            timeout=_REQUEST_TIMEOUT, follow_redirects=True
+            timeout=_REQUEST_TIMEOUT, follow_redirects=True, verify=False
         ) as client:
             docs, failed = await self._fetch_all(client, urls)
 
@@ -201,7 +201,7 @@ class WebCollector(BaseCollector):
         seen: set[str] = set()
 
         async with httpx.AsyncClient(
-            timeout=_REQUEST_TIMEOUT, follow_redirects=True
+            timeout=_REQUEST_TIMEOUT, follow_redirects=True, verify=False
         ) as client:
             for i, query in enumerate(queries):
                 if len(urls) >= max_pages:
