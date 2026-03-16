@@ -21,13 +21,20 @@ async def scout_index(
     language: str = "ru",
     llm_provider: str = "anthropic",
     cache_ttl_hours: int = 24,
+    source_type: str = "web",
+    source_urls: list[str] | None = None,
 ) -> dict:
-    """Index documents from web for a research topic.
+    """Index documents for a research topic.
 
-    Collects web pages, chunks text, and indexes into vector store.
-    Returns session_id for subsequent search/brief calls.
+    Two modes:
+    - source_type="web" (default): search via DuckDuckGo
+    - source_type="urls": fetch provided URLs directly, no search
+
+    For urls mode, provide source_urls (up to 200 URLs).
     Set cache_ttl_hours=0 to force re-indexing.
     """
+    from src.config import SourceType
+
     config = ResearchConfig(
         topic=topic,
         depth=DepthLevel(depth),
@@ -35,18 +42,22 @@ async def scout_index(
         language=language,
         llm_provider=LLMProvider(llm_provider),
         cache_ttl_hours=cache_ttl_hours,
+        source_type=SourceType(source_type),
+        source_urls=source_urls or [],
     )
 
-    session = await pipeline.index(config)
+    session, failed_urls = await pipeline.index(config)
 
     return {
         "session_id": str(session.id),
         "status": session.status.value,
         "documents_count": session.documents_count,
         "chunks_count": session.chunks_count,
+        "failed_urls": failed_urls,
+        "failed_count": len(failed_urls),
         "message": (
-            f"Indexed {session.documents_count} documents, "
-            f"{session.chunks_count} chunks for '{topic}'"
+            f"Indexed {session.documents_count} docs "
+            f"({len(failed_urls)} failed) for '{topic}'"
             if session.status.value == "ready"
             else f"Indexing failed: {session.error}"
         ),

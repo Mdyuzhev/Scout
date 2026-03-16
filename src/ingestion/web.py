@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -32,35 +33,69 @@ _HEADERS = {
 }
 
 _REQUEST_TIMEOUT = 10.0
+_MAX_CONCURRENT = 10
 
 
 class WebCollector(BaseCollector):
     """Collect documents from web: DuckDuckGo search or specific URLs."""
 
-    async def collect(self, config: ResearchConfig) -> list[Document]:
+    async def collect(self, config: ResearchConfig) -> tuple[list[Document], list[str]]:
         if config.source_type == SourceType.SPECIFIC_URLS:
             urls = list(config.source_urls)
         else:
             urls = await self._search_urls(config)
 
-        documents: list[Document] = []
-        seen_hashes: set[str] = set()
-
         async with httpx.AsyncClient(
             headers=_HEADERS, timeout=_REQUEST_TIMEOUT, follow_redirects=True
         ) as client:
-            for url in urls:
-                doc = await self._fetch_page(client, url)
-                if doc is None:
-                    continue
+            docs, failed = await self._fetch_all(client, urls)
+
+        logger.info(
+            "Collected {} documents ({} failed) for topic '{}'",
+            len(docs), len(failed), config.topic,
+        )
+        return docs, failed
+
+    # ------------------------------------------------------------------
+    # Concurrent fetching
+    # ------------------------------------------------------------------
+
+    async def _fetch_all(
+        self,
+        client: httpx.AsyncClient,
+        urls: list[str],
+    ) -> tuple[list[Document], list[str]]:
+        """Fetch URLs concurrently. Returns (documents, failed_urls)."""
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+
+        async def fetch_with_sem(url: str) -> Document | None:
+            async with semaphore:
+                return await self._fetch_page(client, url)
+
+        results = await asyncio.gather(
+            *[fetch_with_sem(url) for url in urls],
+            return_exceptions=True,
+        )
+
+        docs: list[Document] = []
+        failed: list[str] = []
+        seen_hashes: set[str] = set()
+
+        for url, result in zip(urls, results):
+            if isinstance(result, BaseException):
+                logger.warning("Exception fetching {}: {}", url, result)
+                failed.append(url)
+            elif result is None:
+                failed.append(url)
+            else:
+                doc: Document = result
                 if doc.content_hash in seen_hashes:
                     logger.debug("Duplicate skipped: {}", url)
-                    continue
-                seen_hashes.add(doc.content_hash)
-                documents.append(doc)
+                else:
+                    seen_hashes.add(doc.content_hash)
+                    docs.append(doc)
 
-        logger.info("Collected {} documents for topic '{}'", len(documents), config.topic)
-        return documents
+        return docs, failed
 
     # ------------------------------------------------------------------
     # DuckDuckGo HTML search
@@ -79,9 +114,11 @@ class WebCollector(BaseCollector):
         async with httpx.AsyncClient(
             headers=_HEADERS, timeout=_REQUEST_TIMEOUT, follow_redirects=True
         ) as client:
-            for query in queries:
+            for i, query in enumerate(queries):
                 if len(urls) >= max_pages:
                     break
+                if i > 0:
+                    await asyncio.sleep(3)
                 found = await self._ddg_search(client, query, config.language)
                 for u in found:
                     if u not in seen and len(urls) < max_pages:
@@ -111,7 +148,6 @@ class WebCollector(BaseCollector):
             if real:
                 results.append(real)
 
-        # Deduplicate while preserving order
         seen: set[str] = set()
         unique: list[str] = []
         for r in results:
@@ -126,7 +162,6 @@ class WebCollector(BaseCollector):
         if href.startswith("//"):
             href = "https:" + href
         parsed = urlparse(href)
-        # DDG wraps results as /l/?uddg=<encoded_url>
         uddg = parse_qs(parsed.query).get("uddg")
         if uddg:
             return uddg[0]
@@ -156,17 +191,14 @@ class WebCollector(BaseCollector):
         soup = BeautifulSoup(resp.text, "html.parser")
         title = soup.title.string.strip() if soup.title and soup.title.string else url
 
-        # Remove noise tags
         for tag in soup.find_all(_REMOVE_TAGS):
             tag.decompose()
 
-        # Extract main content
         main = soup.find("main") or soup.find("article") or soup.body
         if main is None:
             return None
 
         text = main.get_text(separator="\n", strip=True)
-        # Collapse whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = text.strip()
 

@@ -11,6 +11,10 @@ class BaseCollector(ABC):
     """Abstract base for all data collectors."""
 
     @abstractmethod
-    async def collect(self, config: ResearchConfig) -> list[Document]:
-        """Собрать документы согласно конфигу. Возвращает очищенные Document."""
+    async def collect(self, config: ResearchConfig) -> tuple[list[Document], list[str]]:
+        """Собрать документы согласно конфигу.
+
+        Returns:
+            (documents, failed_urls) — успешно загруженные документы и упавшие URL.
+        """
         ...

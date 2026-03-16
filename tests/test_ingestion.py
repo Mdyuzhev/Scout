@@ -64,11 +64,12 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs = asyncio.run(collector.collect(config))
+            docs, failed = asyncio.run(collector.collect(config))
 
         assert len(docs) >= 1
         assert all(isinstance(d, Document) for d in docs)
         assert docs[0].title == "Test Page"
+        assert failed == []
 
     def test_collect_deduplicates(self, mock_httpx_client):
         """Duplicate pages (same content_hash) are skipped."""
@@ -88,12 +89,12 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs = asyncio.run(collector.collect(config))
+            docs, failed = asyncio.run(collector.collect(config))
 
         assert len(docs) == 1  # second page deduplicated
 
     def test_collect_skips_errors(self, mock_httpx_client):
-        """HTTP errors are logged and skipped, not raised."""
+        """HTTP errors go to failed_urls, not raised."""
         mock_httpx_client.get = AsyncMock(side_effect=httpx.ConnectError("fail"))
 
         config = ResearchConfig(
@@ -104,9 +105,54 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs = asyncio.run(collector.collect(config))
+            docs, failed = asyncio.run(collector.collect(config))
 
         assert docs == []
+        assert "http://broken.com" in failed
+
+    def test_fetch_all_partial_failures(self, mock_httpx_client):
+        """_fetch_all: 5 URLs, 2 raise exceptions → 3 docs, 2 failed."""
+        good_html = _make_html("Good", "content " * 20)
+        good_resp = MagicMock()
+        good_resp.status_code = 200
+        good_resp.text = good_html
+        good_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        good_resp.raise_for_status = MagicMock()
+
+        call_count = 0
+
+        async def get_side_effect(url, **kwargs):
+            nonlocal call_count
+            if "bad" in url:
+                raise httpx.ConnectError("fail")
+            call_count += 1
+            r = MagicMock()
+            r.status_code = 200
+            r.text = _make_html(f"Page{call_count}", f"unique content {call_count} " * 20)
+            r.headers = {"content-type": "text/html; charset=utf-8"}
+            r.raise_for_status = MagicMock()
+            return r
+
+        mock_httpx_client.get = get_side_effect
+
+        urls = [
+            "http://good1.com",
+            "http://bad1.com",
+            "http://good2.com",
+            "http://bad2.com",
+            "http://good3.com",
+        ]
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+            collector = WebCollector()
+            docs, failed = asyncio.run(
+                collector._fetch_all(mock_httpx_client, urls)
+            )
+
+        assert len(docs) == 3
+        assert len(failed) == 2
+        assert "http://bad1.com" in failed
+        assert "http://bad2.com" in failed
 
 
 # ---------------------------------------------------------------------------
