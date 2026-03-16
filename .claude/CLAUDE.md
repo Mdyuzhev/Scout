@@ -130,6 +130,7 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 | SC-009 | connect-llm-brief | ✅ выполнена |
 | SC-015 | rostelecom-videosurveillance | ✅ выполнена |
 | SC-016 | collector-level1 | ✅ выполнена |
+| SC-017 | collector-level2-playwright | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -151,4 +152,4 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (SC-016 done — collector level 1: UA rotation, random delays, stop-list 20 domains, retry 429/503, blocked_count в ответе)*
+*Обновлено: 2026-03-16 (SC-017 done — collector level 2: PlaywrightFetcher, _needs_playwright, PLAYWRIGHT_ENABLED flag, graceful shutdown в pipeline)*
