@@ -126,6 +126,7 @@ curl -s -D - -X POST http://localhost:8020/mcp \
 | SC-011 | dual-input-mode | ✅ выполнена |
 | SC-012 | batch-200-urls | ✅ выполнена |
 | SC-013 | batch-500-urls | ✅ выполнена |
+| SC-014 | batch-ai-tools | ✅ выполнена |
 | SC-009 | connect-llm-brief | 🔲 в очереди |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
