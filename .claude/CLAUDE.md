@@ -6,6 +6,7 @@
 | SC-008 | first-real-run | ✅ выполнена |
 | SC-009 | connect-llm-brief | 🔲 в очереди |
 | SC-010 | three-runs-mini-midi-long | ⚠️ заблокирована (DDG bot-block) |
+| SC-011 | dual-input-mode | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -23,4 +24,4 @@
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (SC-010: код done, прогоны заблокированы DDG bot-block)*
+*Обновлено: 2026-03-16 (SC-011 done — URL-режим + параллельный фетч)*
