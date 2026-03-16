@@ -113,6 +113,16 @@ async def health(request):
     return JSONResponse({"status": "ok", "service": "scout-mcp"})
 
 
+@mcp.custom_route("/tools", methods=["GET"])
+async def tools_list(request):
+    """List registered MCP tools — for CI smoke test."""
+    from starlette.responses import JSONResponse
+
+    tools = await mcp.list_tools()
+    tool_names = [t.name for t in tools]
+    return JSONResponse({"tools": tool_names})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("MCP_PORT", "8020"))
     host = os.getenv("MCP_HOST", "0.0.0.0")
