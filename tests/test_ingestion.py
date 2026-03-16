@@ -64,7 +64,7 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs, failed = asyncio.run(collector.collect(config))
+            docs, failed, blocked = asyncio.run(collector.collect(config))
 
         assert len(docs) >= 1
         assert all(isinstance(d, Document) for d in docs)
@@ -89,7 +89,7 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs, failed = asyncio.run(collector.collect(config))
+            docs, failed, blocked = asyncio.run(collector.collect(config))
 
         assert len(docs) == 1  # second page deduplicated
 
@@ -105,7 +105,7 @@ class TestWebCollector:
 
         with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
             collector = WebCollector()
-            docs, failed = asyncio.run(collector.collect(config))
+            docs, failed, blocked = asyncio.run(collector.collect(config))
 
         assert docs == []
         assert "http://broken.com" in failed
@@ -153,6 +153,46 @@ class TestWebCollector:
         assert len(failed) == 2
         assert "http://bad1.com" in failed
         assert "http://bad2.com" in failed
+
+    def test_blocked_domains_filtered(self, mock_httpx_client):
+        """URLs from _BLOCKED_DOMAINS are skipped without fetching."""
+        mock_httpx_client.get = AsyncMock()
+
+        config = ResearchConfig(
+            topic="test",
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=["http://g2.com/products", "http://www.capterra.com/reviews"],
+        )
+
+        with patch("src.ingestion.web.httpx.AsyncClient", return_value=mock_httpx_client):
+            collector = WebCollector()
+            docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert docs == []
+        assert failed == []
+        assert blocked == 2
+        mock_httpx_client.get.assert_not_called()
+
+    def test_is_blocked_domain(self):
+        """_is_blocked_domain correctly matches domains and subdomains."""
+        from src.ingestion.web import _is_blocked_domain
+
+        assert _is_blocked_domain("https://g2.com/page") is True
+        assert _is_blocked_domain("https://www.g2.com/page") is True
+        assert _is_blocked_domain("https://capterra.com") is True
+        assert _is_blocked_domain("https://reddit.com/r/python") is True
+        assert _is_blocked_domain("https://example.com") is False
+        assert _is_blocked_domain("https://mysite.com/g2.com") is False
+
+    def test_random_headers_keys(self):
+        """_random_headers returns all required browser headers."""
+        from src.ingestion.web import _random_headers
+
+        headers = _random_headers()
+        required = {"User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
+                    "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site"}
+        assert required.issubset(headers.keys())
+        assert "Mozilla" in headers["User-Agent"]
 
 
 # ---------------------------------------------------------------------------

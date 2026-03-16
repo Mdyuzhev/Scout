@@ -46,7 +46,7 @@ async def scout_index(
         source_urls=source_urls or [],
     )
 
-    session, failed_urls = await pipeline.index(config)
+    session, failed_urls, blocked_count = await pipeline.index(config)
 
     return {
         "session_id": str(session.id),
@@ -55,9 +55,10 @@ async def scout_index(
         "chunks_count": session.chunks_count,
         "failed_urls": failed_urls,
         "failed_count": len(failed_urls),
+        "blocked_count": blocked_count,
         "message": (
             f"Indexed {session.documents_count} docs "
-            f"({len(failed_urls)} failed) for '{topic}'"
+            f"({len(failed_urls)} failed, {blocked_count} blocked) for '{topic}'"
             if session.status.value == "ready"
             else f"Indexing failed: {session.error}"
         ),

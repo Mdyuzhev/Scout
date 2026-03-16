@@ -52,8 +52,8 @@ class ScoutPipeline:
     # scout_index
     # ------------------------------------------------------------------
 
-    async def index(self, config: ResearchConfig) -> tuple[ResearchSession, list[str]]:
-        """Collect, chunk, and index documents. Returns (session, failed_urls)."""
+    async def index(self, config: ResearchConfig) -> tuple[ResearchSession, list[str], int]:
+        """Collect, chunk, and index documents. Returns (session, failed_urls, blocked_count)."""
         await self._ensure_init()
 
         # 1. Check cache first
@@ -66,15 +66,16 @@ class ScoutPipeline:
                 "Найдена кэшированная сессия {} для темы '{}'",
                 existing.id, config.topic,
             )
-            return existing, []
+            return existing, [], 0
 
         # 2. Full pipeline
         session = ResearchSession(config=config, status=SessionStatus.INDEXING)
         await self._session_store.save(session)
         failed_urls: list[str] = []
+        blocked_count: int = 0
 
         try:
-            docs, failed_urls = await self._collector.collect(config)
+            docs, failed_urls, blocked_count = await self._collector.collect(config)
             session.documents_count = len(docs)
 
             chunks = []
@@ -87,8 +88,9 @@ class ScoutPipeline:
             session.completed_at = datetime.utcnow()
 
             logger.info(
-                "Session {} ready: {} docs, {} chunks, {} failed",
-                session.id, session.documents_count, session.chunks_count, len(failed_urls),
+                "Session {} ready: {} docs, {} chunks, {} failed, {} blocked",
+                session.id, session.documents_count, session.chunks_count,
+                len(failed_urls), blocked_count,
             )
         except Exception as exc:
             session.status = SessionStatus.FAILED
@@ -97,7 +99,7 @@ class ScoutPipeline:
         finally:
             await self._session_store.save(session)
 
-        return session, failed_urls
+        return session, failed_urls, blocked_count
 
     # ------------------------------------------------------------------
     # scout_search

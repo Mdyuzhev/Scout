@@ -64,17 +64,18 @@ class TestScoutPipeline:
         ]
         chunks = [Chunk(text="chunk1", source_url="https://a.com", source_title="A")]
 
-        pipeline._collector.collect = AsyncMock(return_value=(docs, []))
+        pipeline._collector.collect = AsyncMock(return_value=(docs, [], 0))
         pipeline._chunker.chunk = MagicMock(return_value=chunks)
         pipeline._indexer.index = MagicMock(return_value=1)
 
         config = ResearchConfig(topic="test topic")
-        session, failed = await pipeline.index(config)
+        session, failed, blocked = await pipeline.index(config)
 
         assert session.status == SessionStatus.READY
         assert session.documents_count == 2
         assert session.chunks_count == 1
         assert failed == []
+        assert blocked == 0
         assert pipeline._session_store.save.await_count >= 1
 
     @pytest.mark.asyncio
@@ -84,7 +85,7 @@ class TestScoutPipeline:
         chunks = [Chunk(text="chunk1", source_url="https://a.com", source_title="A")]
 
         pipeline._collector.collect = AsyncMock(
-            return_value=(docs, ["https://bad1.com", "https://bad2.com"])
+            return_value=(docs, ["https://bad1.com", "https://bad2.com"], 1)
         )
         pipeline._chunker.chunk = MagicMock(return_value=chunks)
         pipeline._indexer.index = MagicMock(return_value=1)
@@ -95,19 +96,20 @@ class TestScoutPipeline:
             source_type=SourceType.SPECIFIC_URLS,
             source_urls=["https://a.com", "https://bad1.com", "https://bad2.com"],
         )
-        session, failed = await pipeline.index(config)
+        session, failed, blocked = await pipeline.index(config)
 
         assert session.status == SessionStatus.READY
         assert session.documents_count == 1
         assert len(failed) == 2
         assert "https://bad1.com" in failed
+        assert blocked == 1
 
     @pytest.mark.asyncio
     async def test_index_failure(self, pipeline):
         pipeline._collector.collect = AsyncMock(side_effect=RuntimeError("fail"))
 
         config = ResearchConfig(topic="failing")
-        session, failed = await pipeline.index(config)
+        session, failed, blocked = await pipeline.index(config)
 
         assert session.status == SessionStatus.FAILED
         assert "fail" in session.error
@@ -123,11 +125,12 @@ class TestScoutPipeline:
         pipeline._session_store.find_similar = AsyncMock(return_value=cached)
 
         config = ResearchConfig(topic="cached topic")
-        session, failed = await pipeline.index(config)
+        session, failed, blocked = await pipeline.index(config)
 
         assert session.id == cached.id
         assert session.status == SessionStatus.READY
         assert failed == []
+        assert blocked == 0
         # collector should NOT be called
         pipeline._collector.collect = AsyncMock()
         assert pipeline._collector.collect.await_count == 0
