@@ -136,7 +136,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-016 | collector-level1 | ✅ выполнена |
 | SC-017 | collector-level2-playwright | ✅ выполнена |
 | SC-017.1 | auto-market-russia (v2) | 🔲 backlog |
-| SC-017.2 | apartments-russia | 🔲 backlog |
+| SC-017.2 | apartments-russia | ✅ выполнена |
 | SC-018 | local-file-collector | 🔲 backlog |
 | SC-019 | reranker | 🔲 backlog |
 
@@ -161,4 +161,4 @@ curl -s -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-16 (добавлены: процедура тест→полный пул, запрет угадывания URL)*
+*Обновлено: 2026-03-16 (SC-017.2 done — квартиры РФ: 112 docs, verify=False httpx, SSE-шаблон)*
