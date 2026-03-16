@@ -14,10 +14,10 @@ from src.config import DepthLevel, Document, ResearchConfig, SourceType
 
 from .base import BaseCollector
 
-_DEPTH_LIMITS: dict[DepthLevel, tuple[int, int]] = {
-    DepthLevel.QUICK: (1, 15),
-    DepthLevel.NORMAL: (3, 40),
-    DepthLevel.DEEP: (5, 100),
+_DEPTH_PAGES: dict[DepthLevel, int] = {
+    DepthLevel.QUICK: 15,
+    DepthLevel.NORMAL: 40,
+    DepthLevel.DEEP: 100,
 }
 
 _REMOVE_TAGS = {"nav", "footer", "header", "script", "style", "aside", "noscript"}
@@ -67,12 +67,11 @@ class WebCollector(BaseCollector):
     # ------------------------------------------------------------------
 
     async def _search_urls(self, config: ResearchConfig) -> list[str]:
-        max_queries, max_pages = _DEPTH_LIMITS[config.depth]
+        max_pages = _DEPTH_PAGES[config.depth]
 
         queries = list(config.queries) if config.queries else []
         if not queries:
             queries.append(config.topic)
-        queries = queries[:max_queries]
 
         urls: list[str] = []
         seen: set[str] = set()

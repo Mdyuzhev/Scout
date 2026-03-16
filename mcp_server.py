@@ -20,11 +20,13 @@ async def scout_index(
     queries: list[str] | None = None,
     language: str = "ru",
     llm_provider: str = "anthropic",
+    cache_ttl_hours: int = 24,
 ) -> dict:
     """Index documents from web for a research topic.
 
     Collects web pages, chunks text, and indexes into vector store.
     Returns session_id for subsequent search/brief calls.
+    Set cache_ttl_hours=0 to force re-indexing.
     """
     config = ResearchConfig(
         topic=topic,
@@ -32,6 +34,7 @@ async def scout_index(
         queries=queries or [],
         language=language,
         llm_provider=LLMProvider(llm_provider),
+        cache_ttl_hours=cache_ttl_hours,
     )
 
     session = await pipeline.index(config)

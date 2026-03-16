@@ -147,7 +147,7 @@ class TestContextBuilder:
         assert pkg.total_chunks_in_index == 50
 
     def test_build_deduplicates_by_source(self):
-        """No more than 3 chunks from the same source_url."""
+        """No more than 2 chunks from the same source_url."""
         session = self._make_session()
         results = [
             SearchResult(chunk_id=f"c{i}", text=f"t{i}", source_url="http://same.com",
@@ -157,7 +157,7 @@ class TestContextBuilder:
         builder = ContextBuilder()
         pkg = builder.build(session, "q", results, total_in_index=100)
 
-        assert len(pkg.results) == 3  # capped at 3 per source
+        assert len(pkg.results) == 2  # capped at 2 per source
 
     def test_build_sorts_by_similarity(self):
         """Results are sorted descending by similarity."""
@@ -194,7 +194,7 @@ class TestContextBuilder:
         builder = ContextBuilder()
         pkg = builder.build(session, "q", results, total_in_index=50)
 
-        # 3 from a.com + 1 from b.com = 4
-        assert len(pkg.results) == 4
+        # 2 from a.com + 1 from b.com = 3
+        assert len(pkg.results) == 3
         a_count = sum(1 for r in pkg.results if r.source_url == "http://a.com")
-        assert a_count == 3
+        assert a_count == 2

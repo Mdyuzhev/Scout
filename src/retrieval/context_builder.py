@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from src.config import ResearchPackage, ResearchSession, SearchResult
 
-_MAX_PER_SOURCE = 3
+_MAX_PER_SOURCE = 2
 
 
 class ContextBuilder:
