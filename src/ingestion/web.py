@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -108,13 +108,9 @@ class WebCollector(BaseCollector):
         results: list[str] = []
         for link in soup.select("a.result__a"):
             href = str(link.get("href", ""))
-            if href.startswith("http"):
-                results.append(href)
-        # DuckDuckGo wraps URLs in redirects — extract actual URL from snippet links
-        for link in soup.select("a.result__snippet"):
-            href = str(link.get("href", ""))
-            if href.startswith("http"):
-                results.append(href)
+            real = self._extract_ddg_url(href)
+            if real:
+                results.append(real)
 
         # Deduplicate while preserving order
         seen: set[str] = set()
@@ -124,6 +120,20 @@ class WebCollector(BaseCollector):
                 seen.add(r)
                 unique.append(r)
         return unique
+
+    @staticmethod
+    def _extract_ddg_url(href: str) -> str | None:
+        """Extract real URL from DuckDuckGo redirect wrapper."""
+        if href.startswith("//"):
+            href = "https:" + href
+        parsed = urlparse(href)
+        # DDG wraps results as /l/?uddg=<encoded_url>
+        uddg = parse_qs(parsed.query).get("uddg")
+        if uddg:
+            return uddg[0]
+        if href.startswith("http") and "duckduckgo.com" not in href:
+            return href
+        return None
 
     # ------------------------------------------------------------------
     # Page fetching & cleaning
