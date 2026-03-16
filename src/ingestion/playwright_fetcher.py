@@ -12,11 +12,22 @@ class PlaywrightFetcher:
     # Singleton браузер — создаётся один раз, живёт весь прогон
     _browser = None
     _playwright = None
+    _lock: asyncio.Lock | None = None
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
 
     @classmethod
     async def ensure_started(cls) -> None:
-        """Ленивая инициализация браузера."""
-        if cls._browser is None:
+        """Ленивая инициализация браузера (thread-safe)."""
+        if cls._browser is not None:
+            return
+        async with cls._get_lock():
+            if cls._browser is not None:
+                return
             from playwright.async_api import async_playwright
 
             cls._playwright = await async_playwright().start()
