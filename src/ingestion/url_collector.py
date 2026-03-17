@@ -70,7 +70,11 @@ async def collect_urls(
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    import httpx
+    client = anthropic.AsyncAnthropic(
+        api_key=api_key,
+        http_client=httpx.AsyncClient(),  # без системных proxy переменных
+    )
 
     logger.info("Collecting URLs for '{}' via Haiku web_search...", topic)
 
