@@ -179,6 +179,20 @@ class ScoutPipeline:
         )
 
         result = await self._briefer.generate_brief(context, package.topic, model=model)
+
+        if result.get("brief") is None:
+            logger.error(
+                "pipeline.brief: LLM returned null brief. error={}",
+                result.get("error"),
+            )
+            return {
+                "brief": None,
+                "sources_used": len(package.results),
+                "model": result.get("model"),
+                "tokens_used": None,
+                "error": result.get("error") or "LLM returned null brief",
+            }
+
         result["sources_used"] = len(package.results)
         return result
 

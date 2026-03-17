@@ -285,8 +285,10 @@ async def _run_research_job(
     llm_model: str,
     language: str,
     save_to: str | None,
+    auto_collect: bool = False,
+    auto_collect_count: int = 150,
 ) -> None:
-    """Background coroutine: test 10 URLs → full indexing → brief."""
+    """Background coroutine: (auto_collect →) test 10 URLs → full indexing → brief."""
     from src.config import SourceType
 
     job = _jobs[job_id]
@@ -298,6 +300,28 @@ async def _run_research_job(
         logger.info("job {}: {}", job_id[:8], stage)
 
     try:
+        # ── Stage 0: auto_collect если запрошен ─────────────────────
+        if auto_collect:
+            _update("collecting_urls",
+                    message=f"Haiku собирает URL по теме '{topic}'...")
+            from src.ingestion.url_collector import collect_urls as _collect
+            collected_urls = await _collect(
+                topic=topic, language=language, n_urls=auto_collect_count,
+            )
+            all_urls = list(dict.fromkeys(source_urls + collected_urls))
+            _update(
+                "urls_collected",
+                auto_collected=len(collected_urls),
+                total_urls=len(all_urls),
+                message=f"Собрано {len(collected_urls)} URL. Итого: {len(all_urls)}.",
+            )
+            source_urls = all_urls
+            job["total_urls"] = len(all_urls)
+
+        if not source_urls:
+            _update("error", status="failed", error="No URLs after auto_collect")
+            return
+
         # ── Stage 1: test batch (first 10 URLs) ─────────────────────
         test_urls = source_urls[:TEST_BATCH_SIZE]
         _update("test_indexing", message=f"Тест: индексация {len(test_urls)} URL из {len(source_urls)}")
@@ -408,18 +432,25 @@ async def _run_research_job(
 @mcp.tool()
 async def scout_research_async(
     topic: str,
-    source_urls: list[str],
     query: str,
-    top_k: int = 15,
+    source_urls: list[str] | None = None,
+    auto_collect: bool = False,
+    auto_collect_count: int = 150,
+    top_k: int = 10,
     model: str = "haiku",
     language: str = "ru",
     save_to: str | None = None,
 ) -> dict:
-    """Start a background research job: test 10 URLs first, then full pipeline.
+    """Start a background research job: (auto_collect →) test 10 URLs → full pipeline.
 
     Returns immediately with a job_id. Poll progress with scout_job_status(job_id).
 
+    Two URL modes:
+    - source_urls provided: use given list directly
+    - auto_collect=True: Haiku finds URLs automatically via web_search
+
     Pipeline stages (reported in scout_job_status):
+      0. collecting_urls / urls_collected  → only when auto_collect=True
       1. test_indexing  → test first 10 URLs
       2. test_passed / test_failed  → stop if test fails
       3. full_indexing  → index all URLs
@@ -427,42 +458,56 @@ async def scout_research_async(
       5. completed / error
 
     Args:
-        topic:       Research topic
-        source_urls: Full list of URLs (first 10 used for test)
-        query:       Research question for the brief
-        top_k:       Chunks for LLM context (default 15)
-        model:       "haiku", "sonnet", or "opus"
-        language:    "ru" or "en"
-        save_to:     Optional server path for brief markdown
+        topic:              Research topic
+        query:              Research question for the brief
+        source_urls:        Optional list of URLs (first 10 used for test)
+        auto_collect:       If True, Haiku searches the web to find URLs automatically
+        auto_collect_count: How many URLs to collect when auto_collect=True (default 150)
+        top_k:              Chunks for LLM context (default 10)
+        model:              "haiku", "sonnet", or "opus"
+        language:           "ru" or "en"
+        save_to:            Optional server path for brief markdown
     """
+    if not source_urls and not auto_collect:
+        return {"error": "Provide source_urls or set auto_collect=True"}
+
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
     job_id = str(uuid4())
+    initial_urls = source_urls or []
 
     _jobs[job_id] = {
         "job_id": job_id,
         "topic": topic,
-        "total_urls": len(source_urls),
+        "total_urls": len(initial_urls) if initial_urls else "auto",
         "query": query,
         "model": model,
         "status": "running",
         "stage": "queued",
-        "message": f"Задача создана: {len(source_urls)} URL, тест на {TEST_BATCH_SIZE}",
+        "message": "Задача создана" + (
+            f": {len(initial_urls)} URL, тест на {TEST_BATCH_SIZE}" if initial_urls
+            else f". auto_collect={auto_collect_count} URL"
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     asyncio.create_task(_run_research_job(
-        job_id, topic, source_urls, query, top_k, llm_model, language, save_to,
+        job_id, topic, initial_urls, query, top_k, llm_model, language, save_to,
+        auto_collect, auto_collect_count,
     ))
 
-    logger.info("scout_research_async: job {} created ({} URLs)", job_id[:8], len(source_urls))
+    logger.info(
+        "scout_research_async: job {} created (auto_collect={}, urls={})",
+        job_id[:8], auto_collect, len(initial_urls),
+    )
 
     return {
         "job_id": job_id,
         "status": "running",
-        "message": f"Фоновая задача запущена. Сначала тест на {TEST_BATCH_SIZE} URL, "
-                   f"затем полный пул ({len(source_urls)} URL). "
-                   f"Отслеживайте: scout_job_status(job_id='{job_id}')",
+        "message": (
+            f"Задача запущена. auto_collect={auto_collect}. "
+            f"Отслеживайте: scout_job_status(job_id='{job_id}')"
+        ),
     }
 
 

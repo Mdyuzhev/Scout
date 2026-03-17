@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import anthropic
 from loguru import logger
 
 from .base import BaseBriefer
+
+_RETRY_DELAYS = [15, 45]  # секунд ожидания перед 2-й и 3-й попыткой
 
 _SYSTEM_PROMPT = (
     "Ты — аналитик-исследователь. Тебе предоставлен контекст из нескольких "
@@ -34,20 +38,41 @@ class AnthropicBriefer(BaseBriefer):
         )
 
         effective_model = model or self._model
-        try:
-            response = await self._client.messages.create(
-                model=effective_model,
-                max_tokens=4096,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = response.content[0].text
-            tokens = response.usage.input_tokens + response.usage.output_tokens
-            logger.info(
-                "Brief generated: {} chars, {} tokens ({})",
-                len(text), tokens, effective_model,
-            )
-            return {"brief": text, "model": effective_model, "tokens_used": tokens}
-        except Exception as exc:
-            logger.error("AnthropicBriefer failed: {}", exc)
-            return {"brief": None, "model": effective_model, "tokens_used": None}
+        last_error: str | None = None
+
+        for attempt, delay in enumerate([0] + _RETRY_DELAYS, start=1):
+            if delay:
+                logger.warning(
+                    "AnthropicBriefer: rate limit, retry {}/{} after {}s",
+                    attempt, len(_RETRY_DELAYS) + 1, delay,
+                )
+                await asyncio.sleep(delay)
+            try:
+                response = await self._client.messages.create(
+                    model=effective_model,
+                    max_tokens=4096,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.content[0].text
+                tokens = response.usage.input_tokens + response.usage.output_tokens
+                logger.info(
+                    "Brief generated: {} chars, {} tokens ({}, attempt {})",
+                    len(text), tokens, effective_model, attempt,
+                )
+                return {"brief": text, "model": effective_model,
+                        "tokens_used": tokens, "error": None}
+
+            except anthropic.RateLimitError as exc:
+                last_error = f"rate_limit: {exc}"
+                logger.warning("AnthropicBriefer: 429 attempt {}: {}", attempt, exc)
+                # продолжаем retry
+
+            except Exception as exc:
+                last_error = str(exc)
+                logger.error("AnthropicBriefer failed (no retry): {}", exc)
+                break  # не ретраить на другие ошибки
+
+        logger.error("AnthropicBriefer: exhausted retries. last_error={}", last_error)
+        return {"brief": None, "model": effective_model,
+                "tokens_used": None, "error": last_error}

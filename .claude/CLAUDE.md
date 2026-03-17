@@ -141,6 +141,8 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-018 | local-file-collector | ✅ выполнена |
 | SC-019 | reranker | ✅ выполнена |
 | SC-020 | scout-research-tool | ✅ выполнена |
+| SC-021 | auto-url-collection | ✅ выполнена |
+| SC-022 | briefer-retry-async | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -163,4 +165,4 @@ curl -s -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-17 (SC-017.3 done — инфляция/ставка ЦБ РФ 2024-2025, 203 docs, 720 chunks, brief Haiku 23k токенов)*
+*Обновлено: 2026-03-18 (SC-022 done — briefer retry 429, null-brief guard, scout_research_async auto_collect, /research без nohup)*
