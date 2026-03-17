@@ -78,7 +78,7 @@ async def collect_urls(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
         system=_SYSTEM,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": max(15, n_urls // 5)}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 20}],
         messages=[{
             "role": "user",
             "content": _build_search_prompt(topic, language, n_urls),
