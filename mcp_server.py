@@ -28,17 +28,26 @@ async def scout_index(
     cache_ttl_hours: int = 24,
     source_type: str = "web",
     source_urls: list[str] | None = None,
+    file_paths: list[str] | None = None,
 ) -> dict:
     """Index documents for a research topic.
 
-    Two modes:
+    Three modes:
     - source_type="web" (default): search via DuckDuckGo
     - source_type="urls": fetch provided URLs directly, no search
+    - source_type="files": read local files (txt, md, pdf, docx)
 
     For urls mode, provide source_urls (up to 200 URLs).
+    For files mode, provide file_paths with absolute paths on the server.
     Set cache_ttl_hours=0 to force re-indexing.
     """
     from src.config import SourceType
+
+    effective_urls = source_urls or []
+    effective_source_type = source_type
+    if source_type == "files" and file_paths:
+        effective_urls = file_paths
+        effective_source_type = "local_file"
 
     config = ResearchConfig(
         topic=topic,
@@ -47,8 +56,8 @@ async def scout_index(
         language=language,
         llm_provider=LLMProvider(llm_provider),
         cache_ttl_hours=cache_ttl_hours,
-        source_type=SourceType(source_type),
-        source_urls=source_urls or [],
+        source_type=SourceType(effective_source_type),
+        source_urls=effective_urls,
     )
 
     session, failed_urls, blocked_count = await pipeline.index(config)

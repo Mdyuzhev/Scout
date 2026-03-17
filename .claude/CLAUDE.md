@@ -138,7 +138,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-017.1 | auto-market-russia (v2) | ✅ выполнена |
 | SC-017.2 | apartments-russia | ✅ выполнена |
 | SC-017.3 | inflation-russia | ✅ выполнена |
-| SC-018 | local-file-collector | 🔲 backlog |
+| SC-018 | local-file-collector | ✅ выполнена |
 | SC-019 | reranker | ✅ выполнена |
 | SC-020 | scout-research-tool | ✅ выполнена |
 

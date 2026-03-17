@@ -24,6 +24,7 @@ if "chromadb" not in sys.modules:
     _ef_mod2.SentenceTransformerEmbeddingFunction = MagicMock  # type: ignore[attr-defined]
     sys.modules["chromadb.utils.embedding_functions"] = _ef_mod2
 from src.chunking.sliding_window import SlidingWindowChunker
+from src.ingestion.local_file import LocalFileCollector
 from src.ingestion.web import WebCollector
 
 
@@ -372,7 +373,7 @@ class TestIndexer:
             mock_client.get_or_create_collection.assert_called_once()
             mock_collection.add.assert_called_once()
 
-    def test_index_batches_large_input(self):
+    def test_index_batches_large_input(self):  # noqa: E301
         """Chunks > 100 are split into batches."""
         with patch("src.ingestion.indexer.chromadb") as mock_chroma, \
              patch("src.ingestion.indexer.SentenceTransformerEmbeddingFunction"):
@@ -392,3 +393,127 @@ class TestIndexer:
 
             assert count == 250
             assert mock_collection.add.call_count == 3  # 100+100+50
+
+
+# ---------------------------------------------------------------------------
+# LocalFileCollector tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocalFileCollector:
+    def test_collect_txt_file(self, tmp_path):
+        """LocalFileCollector reads a .txt file into a Document."""
+        txt_file = tmp_path / "report.txt"
+        txt_file.write_text("Это тестовый документ для проверки.\n" * 10, encoding="utf-8")
+
+        config = ResearchConfig(
+            topic="test-local",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(txt_file)],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1
+        assert docs[0].title == "report"
+        assert "тестовый документ" in docs[0].content
+        assert failed == []
+        assert blocked == 0
+
+    def test_collect_md_file(self, tmp_path):
+        """LocalFileCollector reads a .md file."""
+        md_file = tmp_path / "notes.md"
+        md_file.write_text("# Заголовок\n\nТекст заметки. " * 20, encoding="utf-8")
+
+        config = ResearchConfig(
+            topic="test-md",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(md_file)],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1
+        assert docs[0].title == "notes"
+
+    def test_collect_missing_file(self):
+        """Missing file goes to failed list, not raised."""
+        config = ResearchConfig(
+            topic="test-missing",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=["/nonexistent/file.txt"],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 0
+        assert len(failed) == 1
+        assert "/nonexistent/file.txt" in failed
+        assert blocked == 0
+
+    def test_collect_unsupported_extension(self, tmp_path):
+        """Unsupported file types go to failed list."""
+        csv_file = tmp_path / "data.csv"
+        csv_file.write_text("a,b,c\n1,2,3\n" * 50, encoding="utf-8")
+
+        config = ResearchConfig(
+            topic="test-csv",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(csv_file)],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 0
+        assert len(failed) == 1
+
+    def test_collect_short_content_skipped(self, tmp_path):
+        """Files with < 50 chars content go to failed."""
+        short_file = tmp_path / "tiny.txt"
+        short_file.write_text("short", encoding="utf-8")
+
+        config = ResearchConfig(
+            topic="test-short",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(short_file)],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 0
+        assert len(failed) == 1
+
+    def test_collect_deduplicates_by_hash(self, tmp_path):
+        """Duplicate files (same content) are deduplicated."""
+        content = "Одинаковый контент для двух файлов.\n" * 10
+        f1 = tmp_path / "copy1.txt"
+        f2 = tmp_path / "copy2.txt"
+        f1.write_text(content, encoding="utf-8")
+        f2.write_text(content, encoding="utf-8")
+
+        config = ResearchConfig(
+            topic="test-dedup",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(f1), str(f2)],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1  # second deduplicated
+
+    def test_collect_multiple_files(self, tmp_path):
+        """Mix of valid and invalid files processed correctly."""
+        good = tmp_path / "good.txt"
+        good.write_text("Хороший документ с достаточным контентом. " * 10, encoding="utf-8")
+        bad = "/nonexistent/bad.txt"
+
+        config = ResearchConfig(
+            topic="test-mix",
+            source_type=SourceType.LOCAL_FILE,
+            source_urls=[str(good), bad],
+        )
+        collector = LocalFileCollector()
+        docs, failed, blocked = asyncio.run(collector.collect(config))
+
+        assert len(docs) == 1
+        assert len(failed) == 1

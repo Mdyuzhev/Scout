@@ -13,9 +13,11 @@ from src.config import (
     ResearchPackage,
     ResearchSession,
     SessionStatus,
+    SourceType,
     settings,
 )
 from src.ingestion.indexer import Indexer
+from src.ingestion.local_file import LocalFileCollector
 from src.ingestion.playwright_fetcher import PlaywrightFetcher
 from src.ingestion.web import WebCollector
 from src.llm.anthropic_briefer import AnthropicBriefer
@@ -32,7 +34,8 @@ class ScoutPipeline:
         chroma = str(settings.chroma_path)
         model = settings.embedding_model
 
-        self._collector = WebCollector()
+        self._web_collector = WebCollector()
+        self._local_collector = LocalFileCollector()
         self._chunker = SlidingWindowChunker()
         self._indexer = Indexer(chroma_path=chroma, model_name=model)
         self._searcher = Searcher(chroma_path=chroma, model_name=model)
@@ -78,7 +81,11 @@ class ScoutPipeline:
         blocked_count: int = 0
 
         try:
-            docs, failed_urls, blocked_count = await self._collector.collect(config)
+            if config.source_type == SourceType.LOCAL_FILE:
+                collector = self._local_collector
+            else:
+                collector = self._web_collector
+            docs, failed_urls, blocked_count = await collector.collect(config)
             session.documents_count = len(docs)
 
             chunks = []
