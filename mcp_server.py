@@ -132,8 +132,10 @@ async def scout_brief(
 @mcp.tool()
 async def scout_research(
     topic: str,
-    source_urls: list[str],
     query: str,
+    source_urls: list[str] | None = None,
+    auto_collect: bool = False,
+    auto_collect_count: int = 150,
     top_k: int = 15,
     model: str = "haiku",
     language: str = "ru",
@@ -144,35 +146,59 @@ async def scout_research(
     Combines scout_index + scout_brief into a single atomic operation.
     The agent does not need to manage session_id between steps.
 
+    Three modes:
+    - source_urls provided: index given URLs directly
+    - auto_collect=True: Haiku searches the web to find URLs, then indexes them
+    - both: auto_collect adds to provided source_urls
+
     Args:
-        topic:       Research topic description (used for indexing and history)
-        source_urls: List of URLs to fetch and index (up to 400)
-        query:       Research question for the brief (what to synthesize)
-        top_k:       Number of top chunks to pass to LLM (default 15)
-        model:       LLM model — "haiku" (fast, factual), "sonnet" (narrative),
-                     "opus" (balanced, most thorough). Default: "haiku"
-        language:    Source language hint for embeddings — "ru" or "en"
-        save_to:     Optional path on server to save the brief as markdown,
-                     e.g. "/opt/scout/results/my_brief.md"
+        topic:              Research topic description (used for indexing and history)
+        query:              Research question for the brief (what to synthesize)
+        source_urls:        List of URLs to fetch and index (up to 400)
+        auto_collect:       If True, use Haiku web_search to find URLs automatically
+        auto_collect_count: How many URLs to collect when auto_collect=True (default 150)
+        top_k:              Number of top chunks to pass to LLM (default 15)
+        model:              LLM model — "haiku" (fast, factual), "sonnet" (narrative),
+                            "opus" (balanced, most thorough). Default: "haiku"
+        language:           Source language hint for embeddings — "ru" or "en"
+        save_to:            Optional path on server to save the brief as markdown,
+                            e.g. "/opt/scout/results/my_brief.md"
 
     Returns:
-        brief:            Full text of the research brief
-        model:            Model used
-        tokens_used:      LLM token consumption
-        sources_used:     Number of unique sources in context
-        session_id:       Session ID for follow-up scout_search calls
-        documents_count:  Successfully indexed documents
-        chunks_count:     Total indexed chunks
-        failed_count:     URLs that could not be fetched
-        blocked_count:    URLs skipped (bot-protection blocklist)
-        saved_to:         Path where brief was saved (if save_to provided)
+        brief:              Full text of the research brief
+        model:              Model used
+        tokens_used:        LLM token consumption
+        sources_used:       Number of unique sources in context
+        session_id:         Session ID for follow-up scout_search calls
+        documents_count:    Successfully indexed documents
+        chunks_count:       Total indexed chunks
+        failed_count:       URLs that could not be fetched
+        blocked_count:      URLs skipped (bot-protection blocklist)
+        auto_collected_urls: Number of URLs found via auto_collect
+        saved_to:           Path where brief was saved (if save_to provided)
     """
     from src.config import SourceType
 
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
 
+    # Автосбор URL если запрошен
+    collected_urls: list[str] = []
+    if auto_collect:
+        from src.ingestion.url_collector import collect_urls
+        collected_urls = await collect_urls(
+            topic=topic,
+            language=language,
+            n_urls=auto_collect_count,
+        )
+
+    # Объединить с явно переданными URL
+    all_urls = list(dict.fromkeys((source_urls or []) + collected_urls))
+
+    if not all_urls:
+        return {"error": "No URLs provided and auto_collect=False"}
+
     # Шаг 1: индексация
-    logger.info("scout_research: indexing {} URLs for '{}'", len(source_urls), topic)
+    logger.info("scout_research: indexing {} URLs for '{}'", len(all_urls), topic)
     config = ResearchConfig(
         topic=topic,
         depth=DepthLevel.NORMAL,
@@ -180,7 +206,7 @@ async def scout_research(
         llm_provider=LLMProvider.ANTHROPIC,
         cache_ttl_hours=0,  # всегда свежая индексация
         source_type=SourceType.SPECIFIC_URLS,
-        source_urls=source_urls,
+        source_urls=all_urls,
     )
     session, failed_urls, blocked_count = await pipeline.index(config)
 
@@ -191,6 +217,7 @@ async def scout_research(
             "documents_count": session.documents_count,
             "failed_count": len(failed_urls),
             "blocked_count": blocked_count,
+            "auto_collected_urls": len(collected_urls),
         }
 
     logger.info(
@@ -234,6 +261,7 @@ async def scout_research(
         "chunks_count":    session.chunks_count,
         "failed_count":    len(failed_urls),
         "blocked_count":   blocked_count,
+        "auto_collected_urls": len(collected_urls),
         # Файл
         "saved_to":        saved_path,
     }
