@@ -134,7 +134,7 @@ async def collect_urls(
     for r in results:
         if isinstance(r, Exception):
             logger.error("Batch failed: {}", r)
-        else:
+        elif isinstance(r, list):
             all_urls.extend(r)
 
     urls = list(dict.fromkeys(all_urls))  # deduplicate preserving order
