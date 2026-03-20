@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Принудительно устанавливаем offline-режим ДО любых импортов HuggingFace.
+# Используем прямое присваивание (не setdefault) — чтобы перекрыть любое
+# значение которое могло попасть в env через HTTPS_PROXY или subprocess.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 from uuid import UUID
 
@@ -32,7 +35,13 @@ class Searcher:
     ):
         from src.ingestion.indexer import _make_chroma_client
         self._client = _make_chroma_client(chroma_path, chroma_mode, chroma_host, chroma_port)
-        self._ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
+        # local_files_only=True запрещает sentence-transformers делать
+        # любые сетевые запросы к HuggingFace — даже connectivity check.
+        # Kwargs пробрасываются в конструктор SentenceTransformer.
+        self._ef = SentenceTransformerEmbeddingFunction(
+            model_name=model_name,
+            local_files_only=True,
+        )
 
     def search(
         self,
@@ -53,8 +62,14 @@ class Searcher:
                 f"Collection '{collection_name}' not found for session {session_id}"
             )
 
+        # Создаём embedding запроса САМИ через наш уже инициализированный объект,
+        # а не передаём query_texts в chromadb. Это обходит внутренний механизм
+        # chromadb который при query_texts может пересоздавать EF из метаданных
+        # коллекции — и именно там происходил connectivity check к HuggingFace.
+        query_embedding = self._ef([query])
+
         raw = collection.query(
-            query_texts=[query],
+            query_embeddings=query_embedding,
             n_results=top_k,
         )
 

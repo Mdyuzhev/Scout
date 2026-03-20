@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Принудительно offline-режим ДО импортов HuggingFace.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 from uuid import UUID
 
@@ -54,7 +55,11 @@ class Indexer:
         chroma_port: int = 8000,
     ):
         self._client = _make_chroma_client(chroma_path, chroma_mode, chroma_host, chroma_port)
-        self._ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
+        # local_files_only=True — запрещаем любые сетевые запросы к HuggingFace.
+        self._ef = SentenceTransformerEmbeddingFunction(
+            model_name=model_name,
+            local_files_only=True,
+        )
 
     def index(self, chunks: list[Chunk], session_id: UUID) -> int:
         """Index chunks into a session-scoped collection. Returns count indexed."""
