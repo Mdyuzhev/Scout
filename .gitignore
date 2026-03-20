@@ -10,3 +10,5 @@ build/
 venv/
 .idea/
 .vscode/
+results/
+Tasks/
