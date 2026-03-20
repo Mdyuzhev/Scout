@@ -18,7 +18,6 @@ from src.config import (
 )
 from src.ingestion.indexer import Indexer
 from src.ingestion.local_file import LocalFileCollector
-from src.ingestion.playwright_fetcher import PlaywrightFetcher
 from src.ingestion.web import WebCollector
 from src.llm.anthropic_briefer import AnthropicBriefer
 from src.retrieval.context_builder import ContextBuilder
@@ -117,7 +116,9 @@ class ScoutPipeline:
             session.error = str(exc)
             logger.error("Index failed for session {}: {}", session.id, exc)
         finally:
-            await PlaywrightFetcher.close()
+            # НЕ закрываем PlaywrightFetcher здесь — browser singleton
+            # должен жить пока жив контейнер. close() при каждом index()
+            # вызывал race condition при параллельных job-ах.
             await self._session_store.save(session)
 
         return session, failed_urls, blocked_count

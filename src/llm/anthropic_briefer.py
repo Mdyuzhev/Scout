@@ -5,11 +5,21 @@ from __future__ import annotations
 import asyncio
 
 import anthropic
+import httpx
 from loguru import logger
 
 from .base import BaseBriefer
 
-_RETRY_DELAYS = [15, 45]  # секунд ожидания перед 2-й и 3-й попыткой
+_RETRY_DELAYS = [15, 30, 60]  # секунд ожидания перед 2-й, 3-й и 4-й попыткой
+
+# Ошибки при которых имеет смысл повторить запрос
+_RETRYABLE_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    httpx.ConnectError,
+    httpx.ReadTimeout,
+    ConnectionError,
+)
 
 _SYSTEM_PROMPT = (
     "Ты — аналитик-исследователь. Пишешь для product manager или руководителя, "
@@ -76,9 +86,12 @@ class AnthropicBriefer(BaseBriefer):
                 return {"brief": text, "model": effective_model,
                         "tokens_used": tokens, "error": None}
 
-            except anthropic.RateLimitError as exc:
-                last_error = f"rate_limit: {exc}"
-                logger.warning("AnthropicBriefer: 429 attempt {}: {}", attempt, exc)
+            except _RETRYABLE_ERRORS as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "AnthropicBriefer: retryable error attempt {}/{}: {}",
+                    attempt, len(_RETRY_DELAYS) + 1, exc,
+                )
                 # продолжаем retry
 
             except Exception as exc:

@@ -44,11 +44,20 @@ class PlaywrightFetcher:
 
     @classmethod
     async def close(cls) -> None:
-        if cls._browser:
-            await cls._browser.close()
-            await cls._playwright.stop()
-            cls._browser = None
-            cls._playwright = None
+        """Idempotent cleanup — safe to call multiple times."""
+        async with cls._get_lock():
+            if cls._browser is not None:
+                try:
+                    await cls._browser.close()
+                except Exception:
+                    pass
+                cls._browser = None
+            if cls._playwright is not None:
+                try:
+                    await cls._playwright.stop()
+                except Exception:
+                    pass
+                cls._playwright = None
 
     @classmethod
     async def fetch(cls, url: str, timeout_ms: int = 15_000) -> str | None:
