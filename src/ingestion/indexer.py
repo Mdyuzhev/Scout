@@ -19,9 +19,21 @@ def _make_chroma_client(
     host: str = "localhost",
     port: int = 8000,
 ) -> chromadb.ClientAPI:
-    """Create ChromaDB client: PersistentClient (local) or HttpClient (server)."""
+    """Create ChromaDB client: PersistentClient (local) or HttpClient (server).
+
+    For server mode, retries connection up to 5 times (ChromaDB may still be starting).
+    """
     if mode == "server":
-        return chromadb.HttpClient(host=host, port=port)
+        import time
+        for attempt in range(5):
+            try:
+                return chromadb.HttpClient(host=host, port=port)
+            except Exception as e:
+                if attempt < 4:
+                    logger.warning("ChromaDB connect attempt {}/5 failed: {}, retrying in 3s...", attempt + 1, e)
+                    time.sleep(3)
+                else:
+                    raise
     return chromadb.PersistentClient(path=chroma_path)
 
 
