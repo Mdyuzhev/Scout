@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 
+# Принудительно offline-режим ДО импортов HuggingFace.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 from loguru import logger
 
 from src.config import SearchResult
@@ -32,7 +36,7 @@ class Reranker:
         if self._model is None:
             from sentence_transformers import CrossEncoder
             logger.info("Загружаю CrossEncoder модель: {}", self._model_name)
-            self._model = CrossEncoder(self._model_name)
+            self._model = CrossEncoder(self._model_name, local_files_only=True)
             logger.info("CrossEncoder готов")
 
     def rerank(
