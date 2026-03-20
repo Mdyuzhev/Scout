@@ -1,9 +1,11 @@
 """URL collector via Haiku + web_search tool."""
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 
+import httpx
 from loguru import logger
 
 _SYSTEM = (
@@ -21,20 +23,28 @@ _SYSTEM = (
     "Возвращай только URL, по одному на строку, без пояснений."
 )
 
+_ASPECTS_A = (
+    "— статистика и данные с конкретными цифрами\n"
+    "— аналитические обзоры и отраслевые отчёты\n"
+    "— официальные источники и регуляторные данные\n"
+    "— академические статьи и исследования"
+)
 
-def _build_search_prompt(topic: str, language: str, n_urls: int) -> str:
+_ASPECTS_B = (
+    "— новости 2024-2025 с конкретными событиями\n"
+    "— прогнозы и оценки экспертов\n"
+    "— корпоративные блоги и кейсы компаний\n"
+    "— сравнительные обзоры и бенчмарки"
+)
+
+
+def _build_prompt(topic: str, language: str, n_urls: int, aspects: str) -> str:
     lang_hint = "на русском языке" if language == "ru" else "in English"
-    n_searches = max(10, min(20, n_urls // 10))
     return (
         f"Найди {n_urls} реальных URL по теме: «{topic}» ({lang_hint}). "
-        f"Сделай {n_searches} поисковых запросов охватывающих разные аспекты:\n"
-        f"— статистика и данные с конкретными цифрами (объёмы рынка, доли, динамика)\n"
-        f"— аналитические обзоры и отраслевые отчёты\n"
-        f"— официальные источники и регуляторные данные\n"
-        f"— новости 2024-2025 с конкретными событиями\n"
-        f"— прогнозы и оценки экспертов\n"
-        f"— региональная специфика и сегментация.\n"
-        f"Для каждого аспекта используй минимум 2 разных поисковых запроса.\n"
+        f"Сделай 8 поисковых запросов по следующим аспектам:\n"
+        f"{aspects}\n"
+        f"Для каждого аспекта используй 2 разных поисковых запроса.\n"
         f"Перечисли все найденные URL — по одному на строку, без нумерации и пояснений."
     )
 
@@ -52,40 +62,25 @@ def _extract_urls(text: str) -> list[str]:
     return [u for u in found if not any(b in u for b in bad)]
 
 
-async def collect_urls(
+async def _search_batch(
+    client,
     topic: str,
-    language: str = "ru",
-    n_urls: int = 150,
+    language: str,
+    n_urls: int,
+    aspects: str,
+    batch_label: str,
 ) -> list[str]:
-    """Collect URLs for a topic via Haiku + web_search.
-
-    Returns deduplicated list of real URLs.
-    """
-    try:
-        import anthropic
-    except ImportError:
-        raise ImportError("anthropic SDK not installed")
-
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    import httpx
-    client = anthropic.AsyncAnthropic(
-        api_key=api_key,
-        http_client=httpx.AsyncClient(),  # без системных proxy переменных
-    )
-
-    logger.info("Collecting URLs for '{}' via Haiku web_search...", topic)
+    """Single Haiku call with max_uses=8."""
+    import anthropic
 
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
         system=_SYSTEM,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 20}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
         messages=[{
             "role": "user",
-            "content": _build_search_prompt(topic, language, n_urls),
+            "content": _build_prompt(topic, language, n_urls, aspects),
         }],
     )
 
@@ -99,7 +94,49 @@ async def collect_urls(
                     all_text += inner.text + "\n"
 
     urls = _extract_urls(all_text)
-    urls = list(dict.fromkeys(urls))  # deduplicate preserving order
+    logger.info("Batch {}: {} URLs found", batch_label, len(urls))
+    return urls
 
+
+async def collect_urls(
+    topic: str,
+    language: str = "ru",
+    n_urls: int = 150,
+) -> list[str]:
+    """Collect URLs for a topic via two parallel Haiku web_search calls (8 searches each).
+
+    Returns deduplicated list of real URLs.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError("anthropic SDK not installed")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    client = anthropic.AsyncAnthropic(
+        api_key=api_key,
+        http_client=httpx.AsyncClient(),  # без системных proxy переменных
+    )
+
+    logger.info("Collecting URLs for '{}' via Haiku web_search (2 parallel batches)...", topic)
+
+    half = n_urls // 2
+    results = await asyncio.gather(
+        _search_batch(client, topic, language, half, _ASPECTS_A, "A"),
+        _search_batch(client, topic, language, half, _ASPECTS_B, "B"),
+        return_exceptions=True,
+    )
+
+    all_urls: list[str] = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.error("Batch failed: {}", r)
+        else:
+            all_urls.extend(r)
+
+    urls = list(dict.fromkeys(all_urls))  # deduplicate preserving order
     logger.info("Collected {} unique URLs for '{}'", len(urls), topic)
     return urls
