@@ -2,20 +2,28 @@
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
 from loguru import logger
 
-from src.config import DepthLevel, LLMProvider, ResearchConfig
+from src.config import DepthLevel, LLMProvider, ResearchConfig, settings
 from src.pipeline import ScoutPipeline
+from src.storage.job_store import JobStore
 
 mcp = FastMCP("Scout")
 pipeline = ScoutPipeline()
 
-# In-memory job tracker for async research jobs
-_jobs: dict[str, dict] = {}
+# PostgreSQL-backed job store (shared across MCP nodes)
+_job_store = JobStore(dsn=settings.postgres_dsn)
+_job_store_initialized = False
+
+
+async def _ensure_job_store() -> None:
+    global _job_store_initialized
+    if not _job_store_initialized:
+        await _job_store.init()
+        _job_store_initialized = True
 
 
 @mcp.tool()
@@ -291,40 +299,38 @@ async def _run_research_job(
     """Background coroutine: (auto_collect →) test 10 URLs → full indexing → brief."""
     from src.config import SourceType
 
-    job = _jobs[job_id]
+    await _ensure_job_store()
 
-    def _update(stage: str, **kw):
-        job["stage"] = stage
-        job["updated_at"] = datetime.now(timezone.utc).isoformat()
-        job.update(kw)
+    async def _update(stage: str, **kw):
+        kw["stage"] = stage
+        await _job_store.update(job_id, **kw)
         logger.info("job {}: {}", job_id[:8], stage)
 
     try:
         # ── Stage 0: auto_collect если запрошен ─────────────────────
         if auto_collect:
-            _update("collecting_urls",
-                    message=f"Haiku собирает URL по теме '{topic}'...")
+            await _update("collecting_urls",
+                          message=f"Haiku собирает URL по теме '{topic}'...")
             from src.ingestion.url_collector import collect_urls as _collect
             collected_urls = await _collect(
                 topic=topic, language=language, n_urls=auto_collect_count,
             )
             all_urls = list(dict.fromkeys(source_urls + collected_urls))
-            _update(
+            await _update(
                 "urls_collected",
                 auto_collected=len(collected_urls),
                 total_urls=len(all_urls),
                 message=f"Собрано {len(collected_urls)} URL. Итого: {len(all_urls)}.",
             )
             source_urls = all_urls
-            job["total_urls"] = len(all_urls)
 
         if not source_urls:
-            _update("error", status="failed", error="No URLs after auto_collect")
+            await _update("error", status="failed", error="No URLs after auto_collect")
             return
 
         # ── Stage 1: test batch (first 10 URLs) ─────────────────────
         test_urls = source_urls[:TEST_BATCH_SIZE]
-        _update("test_indexing", message=f"Тест: индексация {len(test_urls)} URL из {len(source_urls)}")
+        await _update("test_indexing", message=f"Тест: индексация {len(test_urls)} URL из {len(source_urls)}")
 
         test_config = ResearchConfig(
             topic=f"[test] {topic}",
@@ -335,10 +341,10 @@ async def _run_research_job(
             source_type=SourceType.SPECIFIC_URLS,
             source_urls=test_urls,
         )
-        test_session, test_failed, test_blocked = await pipeline.index(test_config)
+        test_session, test_failed, _ = await pipeline.index(test_config)
 
         if test_session.status.value != "ready" or test_session.documents_count == 0:
-            _update(
+            await _update(
                 "test_failed",
                 status="failed",
                 error=f"Тест провален: {test_session.documents_count} docs, "
@@ -346,7 +352,7 @@ async def _run_research_job(
             )
             return
 
-        _update(
+        await _update(
             "test_passed",
             test_docs=test_session.documents_count,
             test_chunks=test_session.chunks_count,
@@ -356,7 +362,7 @@ async def _run_research_job(
         )
 
         # ── Stage 2: full indexing ───────────────────────────────────
-        _update("full_indexing", message=f"Индексация {len(source_urls)} URL...")
+        await _update("full_indexing", message=f"Индексация {len(source_urls)} URL...")
 
         full_config = ResearchConfig(
             topic=topic,
@@ -370,7 +376,7 @@ async def _run_research_job(
         session, failed_urls, blocked_count = await pipeline.index(full_config)
 
         if session.status.value != "ready" or session.documents_count == 0:
-            _update(
+            await _update(
                 "indexing_failed",
                 status="failed",
                 error=f"Индексация провалена: {session.documents_count} docs, "
@@ -379,7 +385,7 @@ async def _run_research_job(
             )
             return
 
-        _update(
+        await _update(
             "indexing_done",
             session_id=str(session.id),
             documents_count=session.documents_count,
@@ -391,7 +397,7 @@ async def _run_research_job(
         )
 
         # ── Stage 3: brief generation ───────────────────────────────
-        _update("generating_brief", message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
+        await _update("generating_brief", message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
 
         result = await pipeline.brief(session.id, query, top_k, model=llm_model)
         brief_text = result.get("brief", "")
@@ -412,7 +418,7 @@ async def _run_research_job(
             except Exception as e:
                 logger.warning("job {}: failed to save brief: {}", job_id[:8], e)
 
-        _update(
+        await _update(
             "completed",
             status="completed",
             brief=brief_text,
@@ -425,7 +431,7 @@ async def _run_research_job(
         )
 
     except Exception as exc:
-        _update("error", status="failed", error=str(exc))
+        await _update("error", status="failed", error=str(exc))
         logger.error("job {} failed: {}", job_id[:8], exc)
 
 
@@ -471,14 +477,15 @@ async def scout_research_async(
     if not source_urls and not auto_collect:
         return {"error": "Provide source_urls or set auto_collect=True"}
 
+    await _ensure_job_store()
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
     job_id = str(uuid4())
     initial_urls = source_urls or []
 
-    _jobs[job_id] = {
+    await _job_store.create({
         "job_id": job_id,
         "topic": topic,
-        "total_urls": len(initial_urls) if initial_urls else "auto",
+        "total_urls": len(initial_urls),
         "query": query,
         "model": model,
         "status": "running",
@@ -487,9 +494,7 @@ async def scout_research_async(
             f": {len(initial_urls)} URL, тест на {TEST_BATCH_SIZE}" if initial_urls
             else f". auto_collect={auto_collect_count} URL"
         ),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    })
 
     asyncio.create_task(_run_research_job(
         job_id, topic, initial_urls, query, top_k, llm_model, language, save_to,
@@ -520,9 +525,10 @@ async def scout_job_status(job_id: str) -> dict:
             indexing_done → generating_brief → completed
     Status: "running", "completed", or "failed"
     """
-    job = _jobs.get(job_id)
+    await _ensure_job_store()
+    job = await _job_store.get(job_id)
     if job is None:
-        return {"error": f"Job {job_id} not found", "known_jobs": list(_jobs.keys())}
+        return {"error": f"Job {job_id} not found"}
     return {k: v for k, v in job.items() if k != "brief" or job.get("status") == "completed"}
 
 
@@ -532,7 +538,8 @@ async def scout_job_result(job_id: str) -> dict:
 
     Use scout_job_status first to check if the job is completed.
     """
-    job = _jobs.get(job_id)
+    await _ensure_job_store()
+    job = await _job_store.get(job_id)
     if job is None:
         return {"error": f"Job {job_id} not found"}
     if job.get("status") != "completed":

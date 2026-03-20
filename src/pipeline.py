@@ -37,8 +37,18 @@ class ScoutPipeline:
         self._web_collector = WebCollector()
         self._local_collector = LocalFileCollector()
         self._chunker = SlidingWindowChunker()
-        self._indexer = Indexer(chroma_path=chroma, model_name=model)
-        self._searcher = Searcher(chroma_path=chroma, model_name=model)
+        self._indexer = Indexer(
+            chroma_path=chroma, model_name=model,
+            chroma_mode=settings.chroma_mode,
+            chroma_host=settings.chroma_host,
+            chroma_port=settings.chroma_port,
+        )
+        self._searcher = Searcher(
+            chroma_path=chroma, model_name=model,
+            chroma_mode=settings.chroma_mode,
+            chroma_host=settings.chroma_host,
+            chroma_port=settings.chroma_port,
+        )
         self._reranker = Reranker()
         self._context_builder = ContextBuilder()
         self._briefer = (

@@ -139,6 +139,9 @@ class Settings(BaseModel):
     postgres_password: str = ""
 
     chroma_path: Path = Path("./data/chroma_db")
+    chroma_mode: str = "local"  # "local" (PersistentClient) or "server" (HttpClient)
+    chroma_host: str = "localhost"
+    chroma_port: int = 8000
 
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
 
@@ -169,6 +172,9 @@ class Settings(BaseModel):
             postgres_user=os.getenv("POSTGRES_USER", "scout_user"),
             postgres_password=os.getenv("POSTGRES_PASSWORD", ""),
             chroma_path=Path(os.getenv("CHROMA_PATH", "./data/chroma_db")),
+            chroma_mode=os.getenv("CHROMA_MODE", "local"),
+            chroma_host=os.getenv("CHROMA_HOST", "localhost"),
+            chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
             embedding_model=os.getenv(
                 "EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
             ),

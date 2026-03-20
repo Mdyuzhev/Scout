@@ -13,11 +13,30 @@ from src.config import Chunk
 _BATCH_SIZE = 100
 
 
+def _make_chroma_client(
+    chroma_path: str,
+    mode: str = "local",
+    host: str = "localhost",
+    port: int = 8000,
+) -> chromadb.ClientAPI:
+    """Create ChromaDB client: PersistentClient (local) or HttpClient (server)."""
+    if mode == "server":
+        return chromadb.HttpClient(host=host, port=port)
+    return chromadb.PersistentClient(path=chroma_path)
+
+
 class Indexer:
     """Create and populate ChromaDB collections from chunks."""
 
-    def __init__(self, chroma_path: str, model_name: str):
-        self._client = chromadb.PersistentClient(path=chroma_path)
+    def __init__(
+        self,
+        chroma_path: str,
+        model_name: str,
+        chroma_mode: str = "local",
+        chroma_host: str = "localhost",
+        chroma_port: int = 8000,
+    ):
+        self._client = _make_chroma_client(chroma_path, chroma_mode, chroma_host, chroma_port)
         self._ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
 
     def index(self, chunks: list[Chunk], session_id: UUID) -> int:

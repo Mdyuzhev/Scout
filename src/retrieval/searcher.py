@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from loguru import logger
 
@@ -18,8 +17,16 @@ class SessionNotFoundError(Exception):
 class Searcher:
     """Search indexed chunks by semantic similarity."""
 
-    def __init__(self, chroma_path: str, model_name: str):
-        self._client = chromadb.PersistentClient(path=chroma_path)
+    def __init__(
+        self,
+        chroma_path: str,
+        model_name: str,
+        chroma_mode: str = "local",
+        chroma_host: str = "localhost",
+        chroma_port: int = 8000,
+    ):
+        from src.ingestion.indexer import _make_chroma_client
+        self._client = _make_chroma_client(chroma_path, chroma_mode, chroma_host, chroma_port)
         self._ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
 
     def search(

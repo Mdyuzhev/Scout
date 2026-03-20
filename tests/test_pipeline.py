@@ -33,7 +33,8 @@ def _make_pipeline():
     from src.pipeline import ScoutPipeline
 
     p = ScoutPipeline.__new__(ScoutPipeline)
-    p._collector = MagicMock()
+    p._web_collector = MagicMock()
+    p._local_collector = MagicMock()
     p._chunker = MagicMock()
     p._indexer = MagicMock()
     p._searcher = MagicMock()
@@ -66,7 +67,7 @@ class TestScoutPipeline:
         ]
         chunks = [Chunk(text="chunk1", source_url="https://a.com", source_title="A")]
 
-        pipeline._collector.collect = AsyncMock(return_value=(docs, [], 0))
+        pipeline._web_collector.collect = AsyncMock(return_value=(docs, [], 0))
         pipeline._chunker.chunk = MagicMock(return_value=chunks)
         pipeline._indexer.index = MagicMock(return_value=1)
 
@@ -86,7 +87,7 @@ class TestScoutPipeline:
         docs = [Document(url="https://a.com", title="A", content="word " * 100)]
         chunks = [Chunk(text="chunk1", source_url="https://a.com", source_title="A")]
 
-        pipeline._collector.collect = AsyncMock(
+        pipeline._web_collector.collect = AsyncMock(
             return_value=(docs, ["https://bad1.com", "https://bad2.com"], 1)
         )
         pipeline._chunker.chunk = MagicMock(return_value=chunks)
@@ -108,7 +109,7 @@ class TestScoutPipeline:
 
     @pytest.mark.asyncio
     async def test_index_failure(self, pipeline):
-        pipeline._collector.collect = AsyncMock(side_effect=RuntimeError("fail"))
+        pipeline._web_collector.collect = AsyncMock(side_effect=RuntimeError("fail"))
 
         config = ResearchConfig(topic="failing")
         session, failed, blocked = await pipeline.index(config)
@@ -134,8 +135,8 @@ class TestScoutPipeline:
         assert failed == []
         assert blocked == 0
         # collector should NOT be called
-        pipeline._collector.collect = AsyncMock()
-        assert pipeline._collector.collect.await_count == 0
+        pipeline._web_collector.collect = AsyncMock()
+        assert pipeline._web_collector.collect.await_count == 0
 
     @pytest.mark.asyncio
     async def test_search_returns_package(self, pipeline):

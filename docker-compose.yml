@@ -16,19 +16,61 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - scout-net
+
+  scout-chroma:
+    image: chromadb/chroma:latest
+    container_name: scout-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - scout_chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scout-net
 
   scout-mcp:
     build: .
     container_name: scout-mcp
-    network_mode: host
     env_file: .env
-    volumes:
-      - scout_chroma_data:/app/data/chroma_db
+    ports:
+      - "8020:8020"
     depends_on:
       scout-postgres:
         condition: service_healthy
+      scout-chroma:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - scout-net
+
+  scout-mcp-2:
+    build: .
+    container_name: scout-mcp-2
+    env_file: .env
+    ports:
+      - "8021:8020"
+    depends_on:
+      scout-postgres:
+        condition: service_healthy
+      scout-chroma:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - scout-net
 
 volumes:
   scout_postgres_data:
   scout_chroma_data:
+
+networks:
+  scout-net:
+    driver: bridge
