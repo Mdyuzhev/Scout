@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
-# Принудительно offline-режим ДО импортов HuggingFace.
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
@@ -12,65 +12,63 @@ from loguru import logger
 
 from src.config import SearchResult
 
-# Модель: лёгкая, ~80MB, хорошо работает на английском и неплохо на русском
 _DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-# ENV-флаг: выключить для быстрых тестов (RERANKER_ENABLED=false)
 _ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
 
 
 class Reranker:
-    """Rerank search results using a CrossEncoder model.
-
-    CrossEncoder scores query-document pairs directly — more accurate than
-    cosine similarity, but slower (O(n) inference calls vs O(1) for bi-encoder).
-    Use as a second stage over a small candidate set (top-50), not the full index.
-    """
+    """Rerank search results using a CrossEncoder model."""
 
     def __init__(self, model_name: str = _DEFAULT_MODEL) -> None:
         self._model_name = model_name
-        self._model = None  # ленивая загрузка при первом вызове
+        self._model = None
+        self._lock = asyncio.Lock()   # SC-M4: защита от race при lazy load
 
-    def _ensure_loaded(self) -> None:
-        """Загрузить модель при первом обращении."""
-        if self._model is None:
-            from sentence_transformers import CrossEncoder
-            logger.info("Загружаю CrossEncoder модель: {}", self._model_name)
-            self._model = CrossEncoder(self._model_name, local_files_only=True)
+    async def _ensure_loaded(self) -> None:
+        """Thread-safe lazy load — загружаем модель только один раз."""
+        if self._model is not None:
+            return
+        async with self._lock:
+            if self._model is not None:  # double-check после захвата lock
+                return
+            logger.info("Загружаю CrossEncoder: {}", self._model_name)
+            # run_in_executor чтобы не блокировать event loop (~1-2 сек загрузки)
+            loop = asyncio.get_event_loop()
+            model_name = self._model_name
+            self._model = await loop.run_in_executor(
+                None,
+                lambda: __import__(
+                    "sentence_transformers", fromlist=["CrossEncoder"]
+                ).CrossEncoder(model_name, local_files_only=True),
+            )
             logger.info("CrossEncoder готов")
 
-    def rerank(
+    async def rerank(
         self,
         query: str,
         results: list[SearchResult],
         top_k: int = 15,
     ) -> list[SearchResult]:
-        """Rerank results and return top_k with updated similarity scores.
-
-        If RERANKER_ENABLED=false or results list is empty — returns results as-is
-        (trimmed to top_k). This allows graceful degradation without reranking.
-
-        Note: after reranking, the similarity field contains CrossEncoder logits
-        (not cosine similarity). Values can be negative and are not bounded to [0,1].
-        Only the relative ordering matters for ContextBuilder.
-        """
+        """Rerank results and return top_k. Now async for safe concurrent use."""
         if not results:
             return results
 
         if not _ENABLED:
-            logger.debug("Реранкер отключён (RERANKER_ENABLED=false), возвращаю top-{}", top_k)
+            logger.debug("Реранкер отключён, возвращаю top-{}", top_k)
             return results[:top_k]
 
-        self._ensure_loaded()
+        await self._ensure_loaded()
 
-        # CrossEncoder принимает список пар (query, document_text)
-        # Проверить имя поля текста в SearchResult — должно быть .text
         pairs = [(query, r.text) for r in results]
 
-        # predict() возвращает ndarray[float] — raw logits, не нормализованы
-        scores: list[float] = self._model.predict(pairs).tolist()
+        # predict в executor — блокирующий CPU-bound вызов
+        loop = asyncio.get_event_loop()
+        model = self._model
+        scores: list[float] = await loop.run_in_executor(
+            None,
+            lambda: model.predict(pairs).tolist(),
+        )
 
-        # Обновляем similarity в SearchResult и сортируем по новому score
         reranked = [
             SearchResult(
                 chunk_id=r.chunk_id,
