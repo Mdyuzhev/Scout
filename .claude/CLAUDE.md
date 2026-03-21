@@ -53,7 +53,8 @@ sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 Пайплайн: `ResearchConfig → WebCollector → Chunker → ChromaDB → Searcher → ResearchPackage → LLM brief`
 
 Контейнеры на сервере: `scout-mcp` (порт 8020), `scout-mcp-2` (порт 8021),
-`scout-chroma` (порт 8000, общий), `scout-postgres` (порт 5436, общий).
+`scout-chroma` (порт 8000, общий), `scout-postgres` (порт 5436, общий),
+`scout-redis` (только через scout-net, без внешнего порта).
 Нечётные задачи роя → :8020, чётные → :8021.
 Путь на сервере: `/opt/scout`
 
@@ -70,25 +71,72 @@ sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 
 ## Деплой
 
-**Стандартная процедура:**
-1. deploy_project("scout")        — выполнить деплой
-2. notify_deploy("scout")         — передать LocOll на проверку
+**ВАЖНО: `deploy_project("scout", build=True)` НЕ ИСПОЛЬЗОВАТЬ** —
+timeout 300s, а build занимает 10-20 мин (Playwright + sentence-transformers = ~10GB образ).
 
-notify_deploy автоматически проверяет health, логи и возвращает вердикт.
-Агент проекта не занимается проверкой вручную — это зона LocOll.
+### Процедура деплоя — 7 последовательных шагов
 
-### Детальная процедура
+Каждый шаг проверяет завершение предыдущего перед продолжением.
 
+**Шаг 1. Git pull**
+```bash
+run_shell_command("cd /opt/scout && git pull origin main")
 ```
-1. Пишем/правим код локально (E:\Scout)
-2. git add + git commit + git push origin main
-3. deploy_project("scout") — git pull + compose up + health check одним вызовом
-   Или: GitHub Actions runner scout-homelab подхватит push автоматически
-4. notify_deploy("scout") — передать LocOll на проверку
-5. Завершаем задачу → обновляем CLAUDE.md → git push → checkpoint
+Проверка: exit_code == 0
+
+**Шаг 2. Build образа (ОТДЕЛЬНО от запуска)**
+```bash
+run_shell_command("cd /opt/scout && docker compose build scout-mcp", timeout=600)
+```
+Timeout: 600s. Если requirements.txt не менялся — Docker cache, ~30с.
+Проверка: exit_code == 0
+
+**Шаг 3. Поднять инфру (postgres, chroma, redis)**
+```bash
+run_shell_command("cd /opt/scout && docker compose up -d scout-postgres scout-chroma scout-redis")
+```
+Проверка: все 3 healthy:
+```bash
+run_shell_command("docker ps --filter name=scout-postgres --filter name=scout-chroma --filter name=scout-redis --format '{{.Names}}: {{.Status}}'")
 ```
 
-При изменении requirements.txt/Dockerfile: `deploy_project("scout", build=True)`
+**Шаг 4. Поднять MCP ноды (образ уже собран)**
+```bash
+run_shell_command("cd /opt/scout && docker compose up -d scout-mcp scout-mcp-2")
+```
+Проверка: контейнеры running
+
+**Шаг 5. Ждать healthcheck (~30-45с)**
+```bash
+run_shell_command("sleep 30 && curl -s http://localhost:8020/health && echo '---' && curl -s http://localhost:8021/health")
+```
+Проверка: оба `{"status":"ok"}`. Если unhealthy — логи: `get_service_logs("scout")`
+
+**Шаг 6. notify_deploy**
+```
+notify_deploy("scout")
+```
+Проверка: verdict VERIFIED_OK
+
+**Шаг 7. Smoke-test (опционально)**
+MCP init → scout_research_async → poll → completed
+
+### Когда нужен build (шаг 2)
+
+| Что изменилось | Build? | Время |
+|---|---|---|
+| Только `.py` файлы | `docker compose build scout-mcp` (cache pip/playwright) | ~30-60с |
+| `requirements.txt` | `docker compose build --no-cache scout-mcp` | 10-20 мин |
+| `Dockerfile` | `docker compose build --no-cache scout-mcp` | 10-20 мин |
+| Только `.env` | Пропустить шаг 2, в шаге 4 добавить `--force-recreate` | ~30с |
+
+scout-mcp и scout-mcp-2 используют **один образ** — build один раз.
+
+### deploy_project — только для лёгких деплоев
+
+`deploy_project("scout")` (без build) допустим когда:
+- Изменились только `.py` файлы И образ уже актуален
+- Нет изменений в requirements.txt/Dockerfile
 
 ### Инфраструктура деплоя (уже настроена, не трогать)
 
@@ -216,6 +264,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-021 | auto-url-collection | ✅ выполнена |
 | SC-022 | briefer-retry-async | ✅ выполнена |
 | SC-033 | stabilization (13 fixes) | ✅ выполнена |
+| SC-034 | redis-streaming | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -230,6 +279,8 @@ curl -s -X POST http://localhost:8020/mcp \
 - curl к MCP без заголовка `Accept: application/json, text/event-stream`
 - `body.startswith("data:")` для SSE-парсинга — только построчный поиск
 - `docker restart` для обновления env — только `--force-recreate --no-deps`
+- `docker compose down` без указания сервисов — убивает ВСЕ контейнеры проекта + сеть. Proxy gateway меняется!
+- Порт 6380 на хосте — homelab-redis, НЕ scout-redis (scout-redis без внешнего порта)
 - Брать ANTHROPIC_API_KEY из других проектов — только от пользователя явно
 - Запускать полный URL-пул без предварительного теста на 10 URL
 - Конструировать URL по шаблону без верификации — только URL из поиска

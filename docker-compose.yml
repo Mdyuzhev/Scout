@@ -41,8 +41,7 @@ services:
   scout-redis:
     image: redis:7-alpine
     container_name: scout-redis
-    ports:
-      - "6380:6379"
+    # Без ports — доступен только через scout-net (6380 на хосте занят homelab-redis)
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
