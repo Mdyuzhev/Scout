@@ -103,18 +103,38 @@ class ScoutPipeline:
 
             indexed = self._indexer.index(chunks, session.id)
             session.chunks_count = indexed
-            session.status = SessionStatus.READY
-            session.completed_at = datetime.utcnow()
 
-            logger.info(
-                "Session {} ready: {} docs, {} chunks, {} failed, {} blocked",
-                session.id, session.documents_count, session.chunks_count,
-                len(failed_urls), blocked_count,
-            )
+            if indexed == 0:
+                # SC-H2: нет чанков — это не успех
+                session.status = SessionStatus.FAILED
+                session.error = (
+                    f"Indexing produced 0 chunks from {len(docs)} documents. "
+                    "Check source quality or content length."
+                )
+                logger.warning(
+                    "Session {} failed: 0 chunks from {} docs ({} failed, {} blocked)",
+                    session.id, len(docs), len(failed_urls), blocked_count,
+                )
+                # SC-H3: удалить пустую коллекцию
+                self._indexer.delete_collection(session.id)
+            else:
+                session.status = SessionStatus.READY
+                session.completed_at = datetime.utcnow()
+                logger.info(
+                    "Session {} ready: {} docs, {} chunks, {} failed, {} blocked",
+                    session.id, session.documents_count, session.chunks_count,
+                    len(failed_urls), blocked_count,
+                )
+
         except Exception as exc:
             session.status = SessionStatus.FAILED
             session.error = str(exc)
             logger.error("Index failed for session {}: {}", session.id, exc)
+            # SC-H3: cleanup любых частично созданных коллекций
+            try:
+                self._indexer.delete_collection(session.id)
+            except Exception:
+                pass
         finally:
             # НЕ закрываем PlaywrightFetcher здесь — browser singleton
             # должен жить пока жив контейнер. close() при каждом index()
