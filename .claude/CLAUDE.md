@@ -22,6 +22,25 @@
 
 ---
 
+## 🔀 Мультиагентный режим
+
+Если задача допускает параллелизм — **используй мультиагентный режим**.
+
+Когда применять:
+- Изменения в нескольких независимых файлах/модулях
+- Обновление конфигов в нескольких проектах одновременно
+- Параллельные проверки (тесты, lint, health-check)
+- Исследование кодовой базы по нескольким направлениям
+
+Когда НЕ применять:
+- Шаги зависят друг от друга (результат одного нужен для следующего)
+- Работа с одним файлом
+- Простые линейные задачи
+
+Принцип: максимум параллельных агентов при независимых подзадачах, строгая последовательность при зависимостях.
+
+---
+
 ## О проекте
 
 **Scout** — MCP-сервер предобработки данных для продуктовых исследований.
@@ -33,24 +52,43 @@ sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 
 Пайплайн: `ResearchConfig → WebCollector → Chunker → ChromaDB → Searcher → ResearchPackage → LLM brief`
 
-Контейнеры на сервере: `scout-mcp` (порт 8020), `scout-postgres` (порт 5436).
+Контейнеры на сервере: `scout-mcp` (порт 8020), `scout-mcp-2` (порт 8021),
+`scout-chroma` (порт 8000, общий), `scout-postgres` (порт 5436, общий).
+Нечётные задачи роя → :8020, чётные → :8021.
 Путь на сервере: `/opt/scout`
+
+**Конфигурация нод:**
+| Параметр | Primary | Secondary | Shared |
+|----------|---------|-----------|--------|
+| host | 192.168.1.74 | 192.168.1.74 | — |
+| mcp_port | 8020 | 8021 | — |
+| project | scout | scout-2 | — |
+| chroma_port | — | — | 8000 |
+| postgres_port | — | — | 5436 |
 
 ---
 
-## ДЕПЛОЙ — единственный правильный флоу
+## Деплой
+
+**Стандартная процедура:**
+1. deploy_project("scout")        — выполнить деплой
+2. notify_deploy("scout")         — передать LocOll на проверку
+
+notify_deploy автоматически проверяет health, логи и возвращает вердикт.
+Агент проекта не занимается проверкой вручную — это зона LocOll.
+
+### Детальная процедура
 
 ```
 1. Пишем/правим код локально (E:\Scout)
 2. git add + git commit + git push origin main
-3. GitHub Actions runner scout-homelab подхватывает push автоматически
-4. CI: git pull → docker compose up --build -d → health check
-5. Проверяем результат через homelab MCP: docker ps, curl /health
-6. Завершаем задачу → обновляем CLAUDE.md → git push → checkpoint
+3. deploy_project("scout") — git pull + compose up + health check одним вызовом
+   Или: GitHub Actions runner scout-homelab подхватит push автоматически
+4. notify_deploy("scout") — передать LocOll на проверку
+5. Завершаем задачу → обновляем CLAUDE.md → git push → checkpoint
 ```
 
-**Агент НИКОГДА не деплоит вручную** — ни через homelab MCP, ни через paramiko.
-Исключение: первичная настройка `/opt/scout` — уже выполнена, повторять не нужно.
+При изменении requirements.txt/Dockerfile: `deploy_project("scout", build=True)`
 
 ### Инфраструктура деплоя (уже настроена, не трогать)
 
@@ -63,10 +101,44 @@ sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 
 ---
 
+## MCP-инструменты (homelab-mcp)
+
+Все операции с сервером — через `mcp__homelab__*`. Не использовать
+`run_shell_command` там где есть специализированный инструмент.
+
+### Диагностика
+| Инструмент | Использование |
+|-----------|--------------|
+| `get_service_logs("scout")` | Логи MCP-сервера |
+| `get_service_logs("scout-2")` | Логи второй ноды MCP |
+| `get_service_logs("scout-postgres")` | Логи БД |
+| `get_docker_stats(project="scout")` | CPU/RAM per контейнер |
+| `run_health_check(project="scout")` | Статус сервисов проекта |
+| `run_health_check(project="scout-2")` | Статус второй ноды |
+| `git_status("scout")` | Что сейчас задеплоено |
+| `git_log("scout", n=5)` | Последние коммиты на сервере |
+
+### Деплой
+| Инструмент | Использование |
+|-----------|--------------|
+| `deploy_project("scout")` | git pull + compose up + health + logs |
+| `deploy_project("scout", build=True)` | + пересборка, health check с retry (до 5 попыток) |
+| `deploy_project("scout-2")` | Деплой второй ноды |
+| `restart_and_verify("scout")` | Рестарт + проверка + логи |
+| `run_health_check(project="scout", no_cache=True)` | Свежие метрики без кэша |
+
+### Выполнение команд в контейнере
+| Инструмент | Использование |
+|-----------|--------------|
+| `exec_in_container("scout-mcp", "команда")` | Любая команда внутри |
+| `exec_in_container("scout-postgres", "psql -U scout -d scout -c 'SELECT ...'")` | SQL в БД |
+| `grep_docker_logs("scout-mcp", "ERROR")` | Поиск по логам |
+
+---
+
 ## КАК ПОДКЛЮЧАТЬСЯ К СЕРВЕРУ
 
-**Homelab MCP** — основной способ:
-- `run_shell_command`, `exec_in_container`, `get_services_status`, `get_service_logs`
+**Homelab MCP** — основной способ (см. таблицу MCP-инструменты выше)
 
 **Paramiko** — только если homelab MCP недоступен, только после явного разрешения:
 
@@ -143,6 +215,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-020 | scout-research-tool | ✅ выполнена |
 | SC-021 | auto-url-collection | ✅ выполнена |
 | SC-022 | briefer-retry-async | ✅ выполнена |
+| SC-033 | stabilization (13 fixes) | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
@@ -165,4 +238,4 @@ curl -s -X POST http://localhost:8020/mcp \
 
 Полный справочник: `.claude/reference.md`
 
-*Обновлено: 2026-03-18 (SC-022 done — briefer retry 429, null-brief guard, scout_research_async auto_collect, /research без nohup)*
+*Обновлено: 2026-03-20 (dual-node: scout-mcp-2:8021, scout-chroma:8000, /swarm команда)*
