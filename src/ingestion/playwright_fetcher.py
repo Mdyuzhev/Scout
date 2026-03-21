@@ -66,6 +66,7 @@ class PlaywrightFetcher:
         Возвращает HTML или None при ошибке.
         """
         await cls.ensure_started()
+        context = None
         try:
             context = await cls._browser.new_context(
                 user_agent=(
@@ -79,21 +80,24 @@ class PlaywrightFetcher:
             )
             page = await context.new_page()
 
-            # Блокировать тяжёлые ресурсы — ускоряет загрузку
             await page.route(
                 "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,ico}",
                 lambda route: route.abort(),
             )
 
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-
-            # Подождать пока исчезнет Cloudflare spinner если есть
             await asyncio.sleep(2)
-
             html = await page.content()
-            await context.close()
             return html
 
         except Exception as exc:
             logger.warning("Playwright failed for {}: {}", url, exc)
             return None
+
+        finally:
+            # SC-M5: всегда закрываем context, даже при exception
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass

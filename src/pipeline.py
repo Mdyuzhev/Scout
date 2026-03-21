@@ -172,7 +172,7 @@ class ScoutPipeline:
         )
 
         # Реранкинг: CrossEncoder переоценивает кандидатов, возвращает top_k
-        results = self._reranker.rerank(query=query, results=candidates, top_k=top_k)
+        results = await self._reranker.rerank(query=query, results=candidates, top_k=top_k)
 
         return self._context_builder.build(
             session=session,
