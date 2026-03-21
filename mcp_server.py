@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import traceback
 from uuid import UUID, uuid4
 
 from fastmcp import FastMCP
@@ -301,10 +302,15 @@ async def _run_research_job(
 
     await _ensure_job_store()
 
+    import time as _time
+    _job_start = _time.monotonic()
+
     async def _update(stage: str, **kw):
+        elapsed = round(_time.monotonic() - _job_start, 1)
         kw["stage"] = stage
+        kw["elapsed_sec"] = elapsed
         await _job_store.update(job_id, **kw)
-        logger.info("job {}: {}", job_id[:8], stage)
+        logger.info("job {} [{}s]: {}", job_id[:8], elapsed, stage)
 
     try:
         # ── Stage 0: auto_collect если запрошен ─────────────────────
@@ -436,8 +442,9 @@ async def _run_research_job(
         )
 
     except Exception as exc:
-        await _update("error", status="failed", error=str(exc))
-        logger.error("job {} failed: {}", job_id[:8], exc)
+        tb = traceback.format_exc()
+        await _update("error", status="failed", error=str(exc), traceback=tb)
+        logger.error("job {} failed:\n{}", job_id[:8], tb)
 
 
 @mcp.tool()
@@ -580,10 +587,40 @@ async def scout_list_sessions(limit: int = 10) -> dict:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
-    """Health check endpoint для CI и мониторинга."""
+    """Health check — проверяет PostgreSQL и ChromaDB."""
+    import httpx
     from starlette.responses import JSONResponse
 
-    return JSONResponse({"status": "ok", "service": "scout-mcp"})
+    checks: dict[str, str] = {}
+
+    # PostgreSQL
+    try:
+        await pipeline._ensure_init()
+        async with pipeline._session_store._pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        checks["postgres"] = "ok"
+    except Exception as exc:
+        checks["postgres"] = f"error: {exc}"
+
+    # ChromaDB — пинг через HTTP heartbeat
+    try:
+        from src.config import settings as _s
+        chroma_url = f"http://{_s.chroma_host}:{_s.chroma_port}/api/v1/heartbeat"
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(chroma_url)
+            checks["chroma"] = "ok" if r.status_code == 200 else f"status {r.status_code}"
+    except Exception as exc:
+        checks["chroma"] = f"error: {exc}"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        {
+            "status": "ok" if all_ok else "degraded",
+            "service": "scout-mcp",
+            "checks": checks,
+        },
+        status_code=200 if all_ok else 503,
+    )
 
 
 @mcp.custom_route("/tools", methods=["GET"])
