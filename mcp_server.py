@@ -605,7 +605,7 @@ async def health(request):
     # ChromaDB — пинг через HTTP heartbeat
     try:
         from src.config import settings as _s
-        chroma_url = f"http://{_s.chroma_host}:{_s.chroma_port}/api/v1/heartbeat"
+        chroma_url = f"http://{_s.chroma_host}:{_s.chroma_port}/api/v2/heartbeat"
         async with httpx.AsyncClient(timeout=3.0) as client:
             r = await client.get(chroma_url)
             checks["chroma"] = "ok" if r.status_code == 200 else f"status {r.status_code}"
