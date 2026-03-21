@@ -1355,6 +1355,42 @@ async def api_jobs(request):
     )
 
 
+@mcp.custom_route("/api/jobs/clear", methods=["POST"])
+async def api_jobs_clear(request):
+    """Delete completed/failed jobs from DB. Keeps running/queued.
+
+    Query params:
+      status — which to delete: completed/failed/all (default: all finished)
+    """
+    from starlette.responses import JSONResponse
+
+    params = request.query_params
+    status = params.get("status", "finished")
+
+    await _ensure_job_store()
+
+    async with _job_store._pool.acquire() as conn:
+        if status == "completed":
+            result = await conn.execute("DELETE FROM async_jobs WHERE status = 'completed'")
+        elif status == "failed":
+            result = await conn.execute("DELETE FROM async_jobs WHERE status = 'failed'")
+        else:
+            result = await conn.execute(
+                "DELETE FROM async_jobs WHERE status IN ('completed', 'failed')"
+            )
+
+    deleted = int(result.split()[-1]) if result else 0
+    logger.info("api_jobs_clear: deleted {} jobs (filter={})", deleted, status)
+
+    return JSONResponse(
+        {"deleted": deleted, "filter": status},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST",
+        },
+    )
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
     """Health check — проверяет PostgreSQL и ChromaDB."""

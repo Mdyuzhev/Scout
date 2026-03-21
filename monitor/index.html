@@ -5,7 +5,6 @@
   <title>Scout Swarm Monitor</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
   <style>
-    /* CSS variables for dark theme */
     :root {
       --bg: #0f1117;
       --surface: #1a1d27;
@@ -26,13 +25,11 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
 
-    /* Header */
     .header { background: var(--header-bg); border-bottom: 1px solid var(--border); padding: 12px 20px; }
     .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .header-title { font-size: 16px; font-weight: 600; color: var(--text); }
     .header-status { color: var(--text-muted); font-size: 12px; }
 
-    /* Stats */
     .stats { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     .stat-badge {
       padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;
@@ -44,7 +41,6 @@
     .stat-failed   { background: var(--failed-bg); border-color: var(--red); color: var(--red); }
     .stat-queued   { background: var(--surface); border-color: var(--border); }
 
-    /* Controls */
     .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .controls select, .controls input {
       background: var(--surface); border: 1px solid var(--border); color: var(--text);
@@ -57,7 +53,6 @@
     .controls button:hover { border-color: var(--blue); color: var(--blue); }
     .controls button.paused { border-color: var(--yellow); color: var(--yellow); }
 
-    /* Table */
     .table-wrap { overflow-x: auto; padding: 12px 20px; }
     table { width: 100%; border-collapse: collapse; }
     th {
@@ -87,7 +82,6 @@
     td.col-topic .topic-text { color: var(--text); }
     td.col-topic .topic-id   { color: var(--text-muted); font-size: 10px; }
 
-    /* Stage cells */
     .stage-cell { font-size: 16px; line-height: 1; }
     .stage-done    { color: var(--green); }
     .stage-current { color: var(--blue); animation: pulse 1.5s infinite; }
@@ -96,24 +90,40 @@
 
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
-    /* Metrics */
     .metrics { color: var(--text-muted); font-size: 11px; }
     .metrics .ok { color: var(--green); }
     .metrics .err { color: var(--red); }
     .elapsed { color: var(--text-muted); font-size: 11px; }
     .error-cell { color: var(--red); font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Empty state */
     .empty { text-align: center; color: var(--text-muted); padding: 40px; }
 
-    /* Node badges */
     .node-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
     .node-8020 { background: #1a2436; color: var(--blue); border: 1px solid var(--blue); }
     .node-8021 { background: #1a2e2e; color: #68d391; border: 1px solid #68d391; }
 
-    /* Legend */
     .legend { display: flex; gap: 12px; padding: 8px 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
     .legend span { display: flex; align-items: center; gap: 4px; }
+
+    /* Group headers */
+    .group-header {
+      cursor: pointer; user-select: none;
+    }
+    .group-header td {
+      background: var(--header-bg); font-weight: 600; font-size: 12px;
+      text-align: left; padding: 8px 12px; border: 1px solid var(--border);
+      letter-spacing: 0.03em;
+    }
+    .group-header:hover td { background: var(--surface); }
+    .group-toggle { display: inline-block; width: 16px; transition: transform 0.15s; }
+    .group-toggle.collapsed { transform: rotate(-90deg); }
+    .group-summary {
+      color: var(--text-muted); font-weight: 400; font-size: 11px; margin-left: 12px;
+    }
+    .group-label-running   { color: var(--blue); }
+    .group-label-queued    { color: var(--text-muted); }
+    .group-label-completed { color: var(--green); }
+    .group-label-failed    { color: var(--red); }
   </style>
 </head>
 <body>
@@ -144,13 +154,12 @@
     </div>
 
     <div class="controls">
-      <select v-model="filterStatus">
-        <option value="all">Все статусы</option>
-        <option value="running">Running</option>
-        <option value="completed">Completed</option>
-        <option value="failed">Failed</option>
-        <option value="queued">Queued</option>
-      </select>
+      <button @click="filterStatus = 'all'" :class="{paused: filterStatus === 'all'}">Все</button>
+      <button @click="filterStatus = 'running'" :class="{paused: filterStatus === 'running'}" style="color:var(--blue)">Running</button>
+      <button @click="filterStatus = 'queued'" :class="{paused: filterStatus === 'queued'}">Queued</button>
+      <button @click="filterStatus = 'completed'" :class="{paused: filterStatus === 'completed'}" style="color:var(--green)">Completed</button>
+      <button @click="filterStatus = 'failed'" :class="{paused: filterStatus === 'failed'}" style="color:var(--red)">Failed</button>
+      <span style="color:var(--border); margin:0 4px">|</span>
       <input v-model="filterText" placeholder="Поиск по теме..." style="width:220px">
       <select v-model="limitRows">
         <option :value="50">50 строк</option>
@@ -161,6 +170,7 @@
         {{ paused ? 'Resume' : 'Pause' }}
       </button>
       <button @click="fetchNow">Refresh</button>
+      <button @click="clearJobs" style="color:var(--red)">Clear done</button>
       <span style="color: var(--text-muted); font-size:11px; margin-left:4px">
         auto {{ interval }}s
       </span>
@@ -168,7 +178,7 @@
   </div>
 
   <div class="table-wrap">
-    <table v-if="filtered.length">
+    <table v-if="jobs.length">
       <thead>
         <tr>
           <th class="col-topic">Тема / Job ID</th>
@@ -183,43 +193,55 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="job in filtered" :key="job.job_id"
-            :class="'row-' + job.status">
-          <!-- Topic -->
-          <td class="col-topic" :title="job.topic">
-            <div class="topic-text">{{ truncate(job.topic, 50) }}</div>
-            <div class="topic-id">{{ job.job_id.slice(0,8) }}</div>
-          </td>
-          <!-- Model -->
-          <td class="col-model" style="color: var(--text-muted)">{{ job.model || '—' }}</td>
-          <!-- Stages -->
-          <td v-for="col in STAGE_COLS" :key="col.key" class="stage-cell">
-            <span :class="stageClass(job, col)">{{ stageIcon(job, col) }}</span>
-          </td>
-          <!-- Metrics -->
-          <td class="metrics">
-            <span :class="job.documents_count ? 'ok' : ''">
-              {{ job.documents_count != null ? job.documents_count : '—' }}
-            </span>
-            /
-            <span :class="job.chunks_count ? 'ok' : ''">
-              {{ job.chunks_count != null ? job.chunks_count : '—' }}
-            </span>
-            <div v-if="job.failed_count" class="err">fail:{{ job.failed_count }}</div>
-          </td>
-          <!-- Elapsed -->
-          <td class="elapsed">{{ formatElapsed(job.elapsed_sec) }}</td>
-          <!-- Message/Error -->
-          <td>
-            <div v-if="job.error" class="error-cell" :title="job.error">
-              {{ job.error }}
-            </div>
-            <div v-else class="error-cell" style="color:var(--text-muted)"
-                 :title="job.message">
-              {{ truncate(job.message, 60) }}
-            </div>
-          </td>
-        </tr>
+        <template v-for="group in groups" :key="group.status">
+          <!-- Group header -->
+          <tr class="group-header" @click="toggleGroup(group.status)"
+              v-if="group.jobs.length > 0">
+            <td :colspan="STAGE_COLS.length + 5">
+              <span class="group-toggle" :class="{collapsed: !group.expanded}">&#x25BC;</span>
+              <span :class="'group-label-' + group.status">
+                {{ group.label }} ({{ group.jobs.length }})
+              </span>
+              <span class="group-summary">
+                {{ groupSummary(group) }}
+              </span>
+            </td>
+          </tr>
+          <!-- Job rows -->
+          <template v-if="group.expanded">
+            <tr v-for="job in group.jobs" :key="job.job_id"
+                :class="'row-' + job.status">
+              <td class="col-topic" :title="job.topic">
+                <div class="topic-text">{{ truncate(job.topic, 50) }}</div>
+                <div class="topic-id">{{ job.job_id.slice(0,8) }}</div>
+              </td>
+              <td class="col-model" style="color: var(--text-muted)">{{ job.model || '—' }}</td>
+              <td v-for="col in STAGE_COLS" :key="col.key" class="stage-cell">
+                <span :class="stageClass(job, col)">{{ stageIcon(job, col) }}</span>
+              </td>
+              <td class="metrics">
+                <span :class="job.documents_count ? 'ok' : ''">
+                  {{ job.documents_count != null ? job.documents_count : '—' }}
+                </span>
+                /
+                <span :class="job.chunks_count ? 'ok' : ''">
+                  {{ job.chunks_count != null ? job.chunks_count : '—' }}
+                </span>
+                <div v-if="job.failed_count" class="err">fail:{{ job.failed_count }}</div>
+              </td>
+              <td class="elapsed">{{ formatElapsed(job.elapsed_sec) }}</td>
+              <td>
+                <div v-if="job.error" class="error-cell" :title="job.error">
+                  {{ job.error }}
+                </div>
+                <div v-else class="error-cell" style="color:var(--text-muted)"
+                     :title="job.message">
+                  {{ truncate(job.message, 60) }}
+                </div>
+              </td>
+            </tr>
+          </template>
+        </template>
       </tbody>
     </table>
     <div v-else class="empty">
@@ -233,19 +255,17 @@
     <span class="stage-error">X</span><span>ошибка</span>
     <span class="stage-pending">-</span><span>не достигнут</span>
     <span style="margin-left:auto; color: var(--text-muted)">
-      Scout Monitor v1.0 | :{{ primaryPort }} + :{{ secondaryPort }}
+      Scout Monitor v1.1 | :{{ primaryPort }} + :{{ secondaryPort }}
     </span>
   </div>
 </div>
 
 <script>
-const { createApp, ref, computed, onMounted, onUnmounted } = Vue
+const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue
 
-// Configuration
 const PRIMARY_NODE   = "http://192.168.1.74:8020"
 const SECONDARY_NODE = "http://192.168.1.74:8021"
 
-// Stage columns in pipeline order
 const STAGE_COLS = [
   { key: "queued",    label: "Очередь",    stages: ["queued"] },
   { key: "urls",      label: "URL",         stages: ["waiting_for_urls", "collecting_urls", "urls_collected"] },
@@ -256,7 +276,6 @@ const STAGE_COLS = [
   { key: "done",      label: "Итог",        stages: ["completed", "error", "timeout"] },
 ]
 
-// Stage ordering for "passed" logic
 const STAGE_ORDER = [
   "queued",
   "waiting_for_urls", "collecting_urls", "urls_collected",
@@ -267,36 +286,44 @@ const STAGE_ORDER = [
   "completed", "error", "timeout",
 ]
 
+// Group display order and labels
+const GROUP_ORDER = [
+  { status: "running",   label: "Running",   defaultExpanded: true },
+  { status: "queued",    label: "Queued",     defaultExpanded: true },
+  { status: "completed", label: "Completed",  defaultExpanded: false },
+  { status: "failed",    label: "Failed",     defaultExpanded: false },
+]
+
 function stageIndex(stage) {
-  const idx = STAGE_ORDER.indexOf(stage)
+  var idx = STAGE_ORDER.indexOf(stage)
   return idx === -1 ? 999 : idx
 }
 
 function colMaxIndex(col) {
-  return Math.max(...col.stages.map(stageIndex))
+  return Math.max.apply(null, col.stages.map(stageIndex))
 }
 
 createApp({
   setup() {
-    const jobs       = ref([])
-    const loading    = ref(false)
-    const paused     = ref(false)
-    const lastUpdate = ref(null)
-    const filterStatus = ref("all")
-    const filterText   = ref("")
-    const limitRows    = ref(100)
-    const nodeStatus   = ref({ 8020: null, 8021: null })
-    const interval     = ref(10)
-    let timer = null
+    var jobs       = ref([])
+    var loading    = ref(false)
+    var paused     = ref(false)
+    var lastUpdate = ref(null)
+    var filterStatus = ref("all")
+    var filterText = ref("")
+    var limitRows  = ref(100)
+    var nodeStatus = ref({ 8020: null, 8021: null })
+    var interval   = ref(10)
+    var expandedGroups = reactive({ running: true, queued: true, completed: false, failed: false })
+    var timer = null
 
-    // Fetch from one node
     async function fetchNode(baseUrl, port) {
       try {
-        const r = await fetch(baseUrl + "/api/jobs?limit=" + limitRows.value, {
+        var r = await fetch(baseUrl + "/api/jobs?limit=" + limitRows.value, {
           signal: AbortSignal.timeout(5000),
         })
         if (!r.ok) throw new Error("HTTP " + r.status)
-        const data = await r.json()
+        var data = await r.json()
         nodeStatus.value[port] = true
         return data.jobs || []
       } catch (e) {
@@ -309,14 +336,13 @@ createApp({
       if (loading.value) return
       loading.value = true
       try {
-        const [j1, j2] = await Promise.all([
+        var results = await Promise.all([
           fetchNode(PRIMARY_NODE, 8020),
           fetchNode(SECONDARY_NODE, 8021),
         ])
-        // Merge, prefer fresher updated_at
-        const map = new Map()
-        for (const j of [...j1, ...j2]) {
-          const ex = map.get(j.job_id)
+        var map = new Map()
+        for (var j of [].concat(results[0], results[1])) {
+          var ex = map.get(j.job_id)
           if (!ex || (j.updated_at || "") > (ex.updated_at || "")) {
             map.set(j.job_id, j)
           }
@@ -328,38 +354,75 @@ createApp({
       }
     }
 
-    // Polling
     function startTimer() {
       timer = setInterval(function() { if (!paused.value) fetchNow() }, interval.value * 1000)
     }
     function togglePause() { paused.value = !paused.value }
+    function toggleGroup(status) { expandedGroups[status] = !expandedGroups[status] }
+
+    async function clearJobs() {
+      try {
+        await Promise.all([
+          fetch(PRIMARY_NODE + "/api/jobs/clear", { method: "POST" }).catch(function(){}),
+          fetch(SECONDARY_NODE + "/api/jobs/clear", { method: "POST" }).catch(function(){}),
+        ])
+        await fetchNow()
+      } catch (e) { /* ignore */ }
+    }
 
     onMounted(function() { fetchNow(); startTimer() })
     onUnmounted(function() { clearInterval(timer) })
 
-    // Computed
-    const filtered = computed(function() {
-      var result = jobs.value.filter(function(j) {
+    // Filter jobs by status + text
+    var filteredJobs = computed(function() {
+      return jobs.value.filter(function(j) {
         if (filterStatus.value !== "all" && j.status !== filterStatus.value) return false
-        if (filterText.value && !(j.topic || "").toLowerCase().includes(filterText.value.toLowerCase())) return false
+        if (filterText.value && (j.topic || "").toLowerCase().indexOf(filterText.value.toLowerCase()) === -1) return false
         return true
       })
-      // Sort: running -> queued -> completed -> failed
-      var ORDER = { running: 0, queued: 1, completed: 2, failed: 3 }
-      result.sort(function(a, b) {
-        var oa = ORDER[a.status] != null ? ORDER[a.status] : 9
-        var ob = ORDER[b.status] != null ? ORDER[b.status] : 9
-        if (oa !== ob) return oa - ob
-        return (b.updated_at || "") > (a.updated_at || "") ? 1 : -1
-      })
-      return result
     })
+
+    // Group jobs by status
+    var groups = computed(function() {
+      var byStatus = {}
+      filteredJobs.value.forEach(function(j) {
+        if (!byStatus[j.status]) byStatus[j.status] = []
+        byStatus[j.status].push(j)
+      })
+      // Sort within each group by updated_at desc
+      Object.keys(byStatus).forEach(function(s) {
+        byStatus[s].sort(function(a, b) {
+          return (b.updated_at || "") > (a.updated_at || "") ? 1 : -1
+        })
+      })
+      return GROUP_ORDER.map(function(g) {
+        return {
+          status: g.status,
+          label: g.label,
+          expanded: expandedGroups[g.status],
+          jobs: byStatus[g.status] || [],
+        }
+      })
+    })
+
+    function groupSummary(group) {
+      var list = group.jobs
+      if (list.length === 0) return ""
+      var docs = 0, chunks = 0, failed = 0
+      list.forEach(function(j) {
+        docs += j.documents_count || 0
+        chunks += j.chunks_count || 0
+        failed += j.failed_count || 0
+      })
+      var parts = [docs + " docs", chunks + " chunks"]
+      if (failed > 0) parts.push(failed + " failed")
+      return parts.join(" / ")
+    }
 
     function countBy(status) {
       return jobs.value.filter(function(j) { return j.status === status }).length
     }
 
-    // Stage logic
     function stageClass(job, col) {
       var currentIdx = stageIndex(job.stage)
       var colMax = colMaxIndex(col)
@@ -383,7 +446,6 @@ createApp({
       return "-"
     }
 
-    // Formatting
     function formatElapsed(sec) {
       if (!sec) return "—"
       var m = Math.floor(sec / 60), s = Math.round(sec % 60)
@@ -398,8 +460,9 @@ createApp({
     return {
       jobs, loading, paused, lastUpdate, filterStatus, filterText,
       limitRows, nodeStatus, interval,
-      STAGE_COLS, filtered, countBy, stageClass, stageIcon,
-      formatElapsed, truncate, fetchNow, togglePause,
+      STAGE_COLS, groups, countBy, stageClass, stageIcon,
+      formatElapsed, truncate, fetchNow, togglePause, toggleGroup, clearJobs,
+      groupSummary,
       primaryPort: 8020, secondaryPort: 8021,
     }
   }
