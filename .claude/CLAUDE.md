@@ -50,7 +50,8 @@ GitHub: https://github.com/Mdyuzhev/Scout
 Стек: Python 3.12, FastMCP 2.0, ChromaDB, PostgreSQL (порт 5436),
 sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 
-Пайплайн: `ResearchConfig → WebCollector → Chunker → ChromaDB → Searcher → ResearchPackage → LLM brief`
+Пайплайн: `ResearchConfig → WebCollector → Chunker → ChromaDB → Searcher → ResearchPackage → [agent generates brief]`
+SC-036: Scout = детерминированный инструмент. LLM-вызовы на стороне агента (подписка).
 
 Контейнеры на сервере: `scout-mcp` (порт 8020), `scout-mcp-2` (порт 8021),
 `scout-chroma` (порт 8000, общий), `scout-postgres` (порт 5436, общий),
@@ -66,6 +67,21 @@ sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), httpx, BS4.
 | project | scout | scout-2 | — |
 | chroma_port | — | — | 8000 |
 | postgres_port | — | — | 5436 |
+
+---
+
+## Дефолты исследований
+
+| Параметр | Значение | Где задано |
+|----------|----------|-----------|
+| Сбор URL | Агент (web_search, подписка) | SC-036: agent-side |
+| Бриф | Агент (Opus, подписка) | SC-036: agent-side |
+| top_k | 15 | параметр задачи |
+| language | ru (или en) | параметр задачи |
+
+SC-036: `auto_collect` deprecated. Агент собирает URL сам через web_search.
+SC-036: `scout_brief` deprecated. Агент генерирует бриф через `scout_get_context` + LLM.
+Новый flow: `scout_create_job` → `scout_push_urls` → poll → `scout_get_context` → agent LLM → `scout_save_brief`.
 
 ---
 
@@ -265,6 +281,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-022 | briefer-retry-async | ✅ выполнена |
 | SC-033 | stabilization (13 fixes) | ✅ выполнена |
 | SC-034 | redis-streaming | ✅ выполнена |
+| SC-036 | agent-first-pipeline | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 

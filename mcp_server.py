@@ -188,11 +188,21 @@ async def scout_research(
     """
     from src.config import SourceType
 
+    # SC-036: auto_collect deprecated — агент собирает URL сам
+    if auto_collect:
+        return {
+            "error": (
+                "auto_collect=True is deprecated (SC-036). "
+                "Use scout_create_job() + scout_push_urls() instead. "
+                "Agent should collect URLs via web_search and push them to Scout."
+            )
+        }
+
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
 
-    # Автосбор URL если запрошен
+    # Объединить с явно переданными URL (auto_collect убран)
     collected_urls: list[str] = []
-    if auto_collect:
+    if False:  # auto_collect removed
         from src.ingestion.url_collector import collect_urls
         collected_urls = await collect_urls(
             topic=topic,
@@ -793,8 +803,18 @@ async def scout_research_async(
         language:           "ru" or "en"
         save_to:            Optional server path for brief markdown
     """
-    if not source_urls and not auto_collect:
-        return {"error": "Provide source_urls or set auto_collect=True"}
+    # SC-036: auto_collect deprecated — агент собирает URL сам
+    if auto_collect:
+        return {
+            "error": (
+                "auto_collect=True is deprecated (SC-036). "
+                "Use scout_create_job() + scout_push_urls() instead. "
+                "Agent should collect URLs via web_search and push them to Scout."
+            )
+        }
+
+    if not source_urls:
+        return {"error": "Provide source_urls. auto_collect is deprecated (SC-036)."}
 
     await _ensure_job_store()
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
@@ -895,6 +915,203 @@ async def scout_list_sessions(limit: int = 10) -> dict:
     """
     sessions = await pipeline.list_sessions(limit)
     return {"sessions": sessions, "count": len(sessions)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# SC-036: Agent-First Pipeline — новые инструменты
+# ──────────────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def scout_create_job(
+    topic: str,
+    query: str,
+    top_k: int = 10,
+    model: str = "haiku",
+    language: str = "ru",
+    save_to: str | None = None,
+) -> dict:
+    """Create a research job without starting URL collection.
+
+    Agent collects URLs separately and pushes them via scout_push_urls.
+    Scout indexes them as they arrive via Redis streaming pipeline.
+
+    Use this when agent provides URLs directly instead of auto_collect.
+
+    Returns job_id immediately. Poll with scout_job_status(job_id).
+    """
+    await _ensure_job_store()
+    llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
+    job_id = str(uuid4())
+
+    await _job_store.create({
+        "job_id": job_id,
+        "topic": topic,
+        "query": query,
+        "model": model,
+        "status": "running",
+        "stage": "waiting_for_urls",
+        "total_urls": 0,
+        "message": "Ожидание URL от агента. Передайте URL через scout_push_urls.",
+    })
+
+    async def _run_with_timeout() -> None:
+        try:
+            await asyncio.wait_for(
+                _run_research_job_stream(
+                    job_id, topic, [], query, top_k, llm_model,
+                    language, save_to,
+                    auto_collect=False,
+                    auto_collect_count=0,
+                ),
+                timeout=3600.0,
+            )
+        except asyncio.TimeoutError:
+            await _job_store.update(job_id, status="failed",
+                                    stage="timeout",
+                                    error="Job exceeded 1 hour timeout")
+
+    asyncio.create_task(_run_with_timeout())
+
+    logger.info("scout_create_job: job {} created, waiting for URLs", job_id[:8])
+
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "stage": "waiting_for_urls",
+        "message": (
+            f"Job создан. Передайте URL: scout_push_urls(job_id='{job_id}', urls=[...]). "
+            f"Для последнего батча: is_final=True."
+        ),
+    }
+
+
+@mcp.tool()
+async def scout_push_urls(
+    job_id: str,
+    urls: list[str],
+    batch_label: str = "agent",
+    is_final: bool = False,
+) -> dict:
+    """Receive URLs from agent and push to Redis stream for indexing.
+
+    Agent collects URLs via its own web_search, then pushes them here.
+    Scout indexes them as they arrive (streaming pipeline).
+
+    Args:
+        job_id:      Job ID from scout_create_job or scout_research_async
+        urls:        List of URLs to index
+        batch_label: Label for this batch (e.g. "batch_1", "final")
+        is_final:    If True, send EOF signal after this batch (no more URLs)
+
+    Returns:
+        accepted: number of URLs accepted
+        job_id:   echo of job_id
+    """
+    from src.streaming.url_stream import (
+        ensure_stream_groups, publish_url_batch, publish_url_eof,
+    )
+
+    if not urls:
+        return {"error": "urls list is empty"}
+
+    await ensure_stream_groups(job_id)
+    deduped = list(dict.fromkeys(u for u in urls if u.startswith("http")))
+    await publish_url_batch(job_id, deduped, batch_label)
+
+    if is_final:
+        await publish_url_eof(job_id, len(deduped))
+        logger.info("scout_push_urls: job {} batch '{}' {} URLs + EOF",
+                    job_id[:8], batch_label, len(deduped))
+    else:
+        logger.info("scout_push_urls: job {} batch '{}' {} URLs",
+                    job_id[:8], batch_label, len(deduped))
+
+    return {
+        "job_id": job_id,
+        "accepted": len(deduped),
+        "is_final": is_final,
+        "message": (
+            f"Принято {len(deduped)} URL в батч '{batch_label}'"
+            + (" + EOF" if is_final else "")
+        ),
+    }
+
+
+@mcp.tool()
+async def scout_get_context(
+    session_id: str,
+    query: str,
+    top_k: int = 10,
+) -> dict:
+    """Get top-k chunks for agent to synthesize into a brief.
+
+    Agent uses these chunks with its own LLM (subscription) to generate brief,
+    then saves result via scout_save_brief(session_id, brief).
+
+    This replaces scout_brief() for agent-side brief generation.
+    """
+    sid = UUID(session_id)
+    return await pipeline.get_context_for_brief(sid, query, top_k)
+
+
+@mcp.tool()
+async def scout_save_brief(
+    session_id: str,
+    brief: str,
+    model: str = "agent",
+    tokens_used: int | None = None,
+    save_to: str | None = None,
+) -> dict:
+    """Save brief generated by agent to PostgreSQL and optionally to disk.
+
+    Agent generates brief using its own LLM (subscription), then saves result here.
+    This keeps the LLM call on agent side, not server side.
+
+    Args:
+        session_id:  Session ID from scout_index or scout_create_job result
+        brief:       Full brief text generated by agent
+        model:       Model name used (for metadata, e.g. "claude-opus-4-6")
+        tokens_used: Token count (optional, for logging)
+        save_to:     Optional server path to save brief as markdown
+    """
+    sid = UUID(session_id)
+
+    try:
+        await pipeline.save_brief(sid, brief)
+
+        saved_path = None
+        if save_to and brief:
+            try:
+                import os as _os
+                _os.makedirs(_os.path.dirname(save_to), exist_ok=True)
+                with open(save_to, "w", encoding="utf-8") as f:
+                    session = await pipeline.get_session(sid)
+                    topic = session.config.topic if session else "Research"
+                    f.write(f"# {topic}\n\n")
+                    f.write(f"**Модель**: {model}  \n")
+                    if tokens_used:
+                        f.write(f"**Токены**: {tokens_used}  \n")
+                    f.write(f"**Session ID**: {session_id}  \n\n---\n\n")
+                    f.write(brief)
+                saved_path = save_to
+            except Exception as e:
+                logger.warning("scout_save_brief: failed to save to disk: {}", e)
+
+        logger.info(
+            "scout_save_brief: session {} brief saved ({} chars, model={})",
+            session_id[:8], len(brief), model,
+        )
+        return {
+            "session_id": session_id,
+            "saved": True,
+            "saved_to": saved_path,
+            "brief_length": len(brief),
+        }
+
+    except Exception as exc:
+        logger.error("scout_save_brief failed: {}", exc)
+        return {"error": str(exc)}
 
 
 @mcp.custom_route("/health", methods=["GET"])

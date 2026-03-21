@@ -265,6 +265,61 @@ class ScoutPipeline:
             for s in sessions
         ]
 
+    # ------------------------------------------------------------------
+    # get_context_for_brief (SC-036: agent generates brief, not server)
+    # ------------------------------------------------------------------
+
+    async def get_context_for_brief(
+        self,
+        session_id: UUID,
+        query: str,
+        top_k: int = 10,
+    ) -> dict:
+        """Return top-k chunks for agent to generate brief.
+
+        Agent receives chunks, generates brief via its own LLM (subscription),
+        then saves result via scout_save_brief().
+        """
+        package = await self.search(session_id, query, top_k)
+
+        context_parts = []
+        for r in package.results:
+            context_parts.append(
+                f"[{r.source_title}] ({r.source_url})\n{r.text}"
+            )
+
+        return {
+            "session_id": str(session_id),
+            "topic": package.topic,
+            "query": query,
+            "context": "\n\n---\n\n".join(context_parts),
+            "chunks": [
+                {
+                    "text": r.text,
+                    "source_url": r.source_url,
+                    "source_title": r.source_title,
+                    "similarity": r.similarity,
+                }
+                for r in package.results
+            ],
+            "chunks_count": len(package.results),
+            "total_in_index": package.total_chunks_in_index,
+        }
+
+    # ------------------------------------------------------------------
+    # save_brief (SC-036: persist agent-generated brief)
+    # ------------------------------------------------------------------
+
+    async def save_brief(self, session_id: UUID, brief: str) -> None:
+        """Save agent-generated brief to PostgreSQL session."""
+        await self._ensure_init()
+        session = await self._session_store.get(session_id)
+        if session is None:
+            raise KeyError(f"Session {session_id} not found")
+        session.brief = brief
+        await self._session_store.save(session)
+        logger.info("Agent brief saved for session {}", session_id)
+
     async def get_session(self, session_id: UUID) -> ResearchSession | None:
         await self._ensure_init()
         return await self._session_store.get(session_id)
