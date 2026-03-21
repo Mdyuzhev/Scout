@@ -90,3 +90,14 @@ class Indexer:
             "Indexed {} chunks into collection '{}'", total, collection_name
         )
         return total
+
+    def delete_collection(self, session_id: UUID) -> None:
+        """Remove ChromaDB collection — cleanup on indexing failure."""
+        collection_name = f"session_{session_id.hex}"
+        try:
+            self._client.delete_collection(collection_name)
+            logger.info("Deleted orphaned ChromaDB collection '{}'", collection_name)
+        except Exception as exc:
+            logger.warning(
+                "Could not delete collection '{}': {}", collection_name, exc
+            )

@@ -343,12 +343,17 @@ async def _run_research_job(
         )
         test_session, test_failed, _ = await pipeline.index(test_config)
 
-        if test_session.status.value != "ready" or test_session.documents_count == 0:
+        if (test_session.status.value != "ready"
+                or test_session.documents_count == 0
+                or test_session.chunks_count == 0):
             await _update(
                 "test_failed",
                 status="failed",
-                error=f"Тест провален: {test_session.documents_count} docs, "
-                      f"{len(test_failed)} failed, status={test_session.status.value}",
+                error=(
+                    f"Тест провален: docs={test_session.documents_count}, "
+                    f"chunks={test_session.chunks_count}, "
+                    f"status={test_session.status.value}"
+                ),
             )
             return
 
