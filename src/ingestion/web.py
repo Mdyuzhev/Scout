@@ -64,6 +64,9 @@ _BLOCKED_DOMAINS: frozenset[str] = frozenset([
 _REQUEST_TIMEOUT = 10.0
 _MAX_CONCURRENT = 10
 
+_RETRY_BACKOFF = [5.0, 20.0]   # паузы перед 2-й и 3-й попыткой
+_RETRY_ON_STATUS = {429, 500, 502, 503, 504}
+
 _PLAYWRIGHT_ENABLED = os.getenv("PLAYWRIGHT_ENABLED", "true").lower() == "true"
 
 # Признаки Cloudflare JS-challenge в ответе httpx
@@ -267,20 +270,28 @@ class WebCollector(BaseCollector):
     ) -> Document | None:
         raw_text: str | None = None
 
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 resp = await client.get(url, headers=_random_headers())
-                if resp.status_code == 429:
-                    if attempt == 0:
-                        wait = float(resp.headers.get("Retry-After", "5"))
-                        logger.debug("429 на {}, жду {:.0f}с", url, wait)
-                        await asyncio.sleep(min(wait, 10))
+                if resp.status_code in _RETRY_ON_STATUS:
+                    if attempt < 2:
+                        if resp.status_code == 429:
+                            wait = float(resp.headers.get(
+                                "Retry-After", _RETRY_BACKOFF[attempt]
+                            ))
+                            wait = min(wait, 60.0)
+                        else:
+                            wait = _RETRY_BACKOFF[attempt]
+                        logger.debug(
+                            "{} на {} (attempt {}), жду {:.0f}с",
+                            resp.status_code, url, attempt + 1, wait
+                        )
+                        await asyncio.sleep(wait)
                         continue
-                    logger.warning("429 повторно на {}, пропускаем", url)
+                    logger.warning(
+                        "{} x3 на {}, пропускаем", resp.status_code, url
+                    )
                     return None
-                if resp.status_code == 503 and attempt == 0:
-                    await asyncio.sleep(random.uniform(2, 5))
-                    continue
 
                 # 403 — не вызываем raise_for_status, пробуем Playwright
                 if resp.status_code == 403:
