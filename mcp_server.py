@@ -1374,6 +1374,8 @@ async def api_jobs_clear(request):
             result = await conn.execute("DELETE FROM async_jobs WHERE status = 'completed'")
         elif status == "failed":
             result = await conn.execute("DELETE FROM async_jobs WHERE status = 'failed'")
+        elif status == "all":
+            result = await conn.execute("DELETE FROM async_jobs")
         else:
             result = await conn.execute(
                 "DELETE FROM async_jobs WHERE status IN ('completed', 'failed')"

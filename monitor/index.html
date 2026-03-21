@@ -170,7 +170,8 @@
         {{ paused ? 'Resume' : 'Pause' }}
       </button>
       <button @click="fetchNow">Refresh</button>
-      <button @click="clearJobs" style="color:var(--red)">Clear done</button>
+      <button @click="clearJobs('finished')" style="color:var(--red)">Clear done</button>
+      <button @click="clearJobs('all')" style="color:var(--red)">Clear all</button>
       <span style="color: var(--text-muted); font-size:11px; margin-left:4px">
         auto {{ interval }}s
       </span>
@@ -360,11 +361,12 @@ createApp({
     function togglePause() { paused.value = !paused.value }
     function toggleGroup(status) { expandedGroups[status] = !expandedGroups[status] }
 
-    async function clearJobs() {
+    async function clearJobs(filter) {
+      var qs = filter === "all" ? "?status=all" : ""
       try {
         await Promise.all([
-          fetch(PRIMARY_NODE + "/api/jobs/clear", { method: "POST" }).catch(function(){}),
-          fetch(SECONDARY_NODE + "/api/jobs/clear", { method: "POST" }).catch(function(){}),
+          fetch(PRIMARY_NODE + "/api/jobs/clear" + qs, { method: "POST" }).catch(function(){}),
+          fetch(SECONDARY_NODE + "/api/jobs/clear" + qs, { method: "POST" }).catch(function(){}),
         ])
         await fetchNow()
       } catch (e) { /* ignore */ }
