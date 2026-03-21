@@ -501,10 +501,26 @@ async def scout_research_async(
         ),
     })
 
-    asyncio.create_task(_run_research_job(
-        job_id, topic, initial_urls, query, top_k, llm_model, language, save_to,
-        auto_collect, auto_collect_count,
-    ))
+    async def _run_with_timeout() -> None:
+        try:
+            await asyncio.wait_for(
+                _run_research_job(
+                    job_id, topic, initial_urls, query, top_k, llm_model,
+                    language, save_to, auto_collect, auto_collect_count,
+                ),
+                timeout=3600.0,  # 1 час максимум на job
+            )
+        except asyncio.TimeoutError:
+            await _ensure_job_store()
+            await _job_store.update(
+                job_id,
+                status="failed",
+                stage="timeout",
+                error="Job exceeded 1 hour timeout",
+            )
+            logger.error("job {} timed out after 1h", job_id[:8])
+
+    asyncio.create_task(_run_with_timeout())
 
     logger.info(
         "scout_research_async: job {} created (auto_collect={}, urls={})",

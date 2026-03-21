@@ -225,6 +225,24 @@ class ScoutPipeline:
             }
 
         result["sources_used"] = len(package.results)
+
+        # SC-M7: persist brief in PostgreSQL
+        brief_text = result.get("brief")
+        if brief_text:
+            try:
+                session = await self._session_store.get(session_id)
+                if session:
+                    session.brief = brief_text
+                    await self._session_store.save(session)
+                    logger.info(
+                        "Brief persisted to PostgreSQL for session {}",
+                        session_id
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Could not persist brief to PostgreSQL: {}", exc
+                )
+
         return result
 
     # ------------------------------------------------------------------
