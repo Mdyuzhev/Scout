@@ -38,6 +38,20 @@ services:
     networks:
       - scout-net
 
+  scout-redis:
+    image: redis:7-alpine
+    container_name: scout-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scout-net
+
   scout-mcp:
     build: .
     container_name: scout-mcp
@@ -48,6 +62,8 @@ services:
       scout-postgres:
         condition: service_healthy
       scout-chroma:
+        condition: service_healthy
+      scout-redis:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -63,6 +79,8 @@ services:
       scout-postgres:
         condition: service_healthy
       scout-chroma:
+        condition: service_healthy
+      scout-redis:
         condition: service_healthy
     restart: unless-stopped
     networks:

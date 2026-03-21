@@ -140,3 +140,67 @@ async def collect_urls(
     urls = list(dict.fromkeys(all_urls))  # deduplicate preserving order
     logger.info("Collected {} unique URLs for '{}'", len(urls), topic)
     return urls
+
+
+async def collect_urls_streaming(
+    topic: str,
+    job_id: str,
+    language: str = "ru",
+    n_urls: int = 150,
+) -> None:
+    """Streaming variant: publish URL batches to Redis stream as they complete.
+
+    Publishes batches A and B to scout:urls:{job_id} as each finishes.
+    Publishes EOF marker after both batches complete.
+    Requires REDIS_STREAMING=true and Redis connection.
+    """
+    from src.streaming.url_stream import (
+        ensure_stream_groups, publish_url_batch,
+        publish_url_eof,
+    )
+
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError("anthropic SDK not installed")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    client = anthropic.AsyncAnthropic(
+        api_key=api_key,
+        http_client=httpx.AsyncClient(),
+    )
+
+    await ensure_stream_groups(job_id)
+
+    half = n_urls // 2
+    total_collected = 0
+
+    async def _batch_and_publish(aspects: str, label: str) -> list[str]:
+        """Run search batch and immediately publish to stream."""
+        nonlocal total_collected
+        urls = await _search_batch(client, topic, language, half, aspects, label)
+        if urls:
+            await publish_url_batch(job_id, urls, label)
+            total_collected += len(urls)
+        return urls
+
+    logger.info("collect_urls_streaming: starting for job {}", job_id[:8])
+
+    results = await asyncio.gather(
+        _batch_and_publish(_ASPECTS_A, "A"),
+        _batch_and_publish(_ASPECTS_B, "B"),
+        return_exceptions=True,
+    )
+
+    for r in results:
+        if isinstance(r, Exception):
+            logger.error("Streaming batch failed: {}", r)
+
+    await publish_url_eof(job_id, total_collected)
+    logger.info(
+        "collect_urls_streaming: done, {} total URLs for job {}",
+        total_collected, job_id[:8],
+    )
