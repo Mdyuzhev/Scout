@@ -27,7 +27,12 @@ class JobStore:
         self._pool: asyncpg.Pool | None = None
 
     async def init(self) -> None:
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
+        self._pool = await asyncpg.create_pool(
+            self._dsn,
+            min_size=2,
+            max_size=20,
+            command_timeout=30.0,   # таймаут на отдельный SQL-запрос
+        )
         if _MIGRATION_FILE.exists():
             sql = _MIGRATION_FILE.read_text(encoding="utf-8")
             async with self._pool.acquire() as conn:
