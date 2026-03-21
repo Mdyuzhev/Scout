@@ -61,7 +61,7 @@ class SessionStore:
                 session.status.value,
                 session.documents_count,
                 session.chunks_count,
-                None,  # brief stored separately
+                session.brief,
                 session.error,
                 session.created_at,
                 session.completed_at,
@@ -126,6 +126,7 @@ class SessionStore:
             status=SessionStatus(row["status"]),
             documents_count=row["documents_count"] or 0,
             chunks_count=row["chunks_count"] or 0,
+            brief=row["brief"],
             created_at=row["created_at"],
             completed_at=row["completed_at"],
             error=row["error"],

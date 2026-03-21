@@ -92,6 +92,7 @@ class ResearchSession(BaseModel):
     status: SessionStatus = SessionStatus.PENDING
     documents_count: int = 0
     chunks_count: int = 0
+    brief: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: datetime | None = None
     error: str | None = None
