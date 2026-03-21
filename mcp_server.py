@@ -382,13 +382,14 @@ async def _run_research_job_stream(
             )
         else:
             # Явный список URL — публикуем одним батчем сразу
+            # Если source_urls пуст — агент передаст URL через scout_push_urls
             from src.streaming.url_stream import (
                 ensure_stream_groups, publish_url_batch, publish_url_eof,
             )
             await ensure_stream_groups(job_id)
             if source_urls:
                 await publish_url_batch(job_id, source_urls, "manual")
-            await publish_url_eof(job_id, len(source_urls))
+                await publish_url_eof(job_id, len(source_urls))
 
         # ── Stage 1: читать URL батчи из стрима и индексировать ──────
         await _update("stream_indexing",
@@ -420,7 +421,8 @@ async def _run_research_job_stream(
         test_passed = False
         eof_received = False
 
-        IDLE_TIMEOUT_MS = 120_000  # 2 мин без новых сообщений
+        # SC-036: agent may take time to push URLs, extend timeout
+        IDLE_TIMEOUT_MS = 600_000 if not source_urls else 120_000
         consecutive_empty = 0
 
         while not eof_received:
