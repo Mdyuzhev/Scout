@@ -27,3 +27,6 @@ CREATE TABLE IF NOT EXISTS async_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON async_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON async_jobs(created_at DESC);
+
+-- SC-040: elapsed time tracking
+ALTER TABLE async_jobs ADD COLUMN IF NOT EXISTS elapsed_sec FLOAT;

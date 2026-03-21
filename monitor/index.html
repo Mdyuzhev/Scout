@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>Scout Swarm Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+  <style>
+    /* CSS variables for dark theme */
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --text: #e2e8f0;
+      --text-muted: #718096;
+      --blue: #4299e1;
+      --green: #48bb78;
+      --red: #fc8181;
+      --yellow: #ecc94b;
+      --running-bg: #1a2436;
+      --completed-bg: #1a2e1a;
+      --failed-bg: #2e1a1a;
+      --queued-bg: #1a1d27;
+      --header-bg: #13151f;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+
+    /* Header */
+    .header { background: var(--header-bg); border-bottom: 1px solid var(--border); padding: 12px 20px; }
+    .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .header-title { font-size: 16px; font-weight: 600; color: var(--text); }
+    .header-status { color: var(--text-muted); font-size: 12px; }
+
+    /* Stats */
+    .stats { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .stat-badge {
+      padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;
+      border: 1px solid var(--border);
+    }
+    .stat-total    { background: var(--surface); }
+    .stat-done     { background: #1a2e1a; border-color: var(--green); color: var(--green); }
+    .stat-running  { background: var(--running-bg); border-color: var(--blue); color: var(--blue); }
+    .stat-failed   { background: var(--failed-bg); border-color: var(--red); color: var(--red); }
+    .stat-queued   { background: var(--surface); border-color: var(--border); }
+
+    /* Controls */
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .controls select, .controls input {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: inherit;
+    }
+    .controls button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .controls button:hover { border-color: var(--blue); color: var(--blue); }
+    .controls button.paused { border-color: var(--yellow); color: var(--yellow); }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; padding: 12px 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      background: var(--header-bg); color: var(--text-muted); font-weight: 500;
+      padding: 6px 8px; text-align: center; border: 1px solid var(--border);
+      white-space: nowrap; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    th.col-topic { text-align: left; min-width: 200px; max-width: 280px; }
+    th.col-model { width: 60px; }
+    th.col-stage { width: 80px; }
+    th.col-metrics { width: 90px; }
+
+    tr.row-running   { background: var(--running-bg); }
+    tr.row-completed { background: var(--completed-bg); }
+    tr.row-failed    { background: var(--failed-bg); }
+    tr.row-queued    { background: var(--queued-bg); }
+    tr:hover td { filter: brightness(1.2); }
+
+    td {
+      padding: 5px 8px; border: 1px solid var(--border);
+      vertical-align: middle; text-align: center;
+    }
+    td.col-topic {
+      text-align: left; max-width: 280px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    td.col-topic .topic-text { color: var(--text); }
+    td.col-topic .topic-id   { color: var(--text-muted); font-size: 10px; }
+
+    /* Stage cells */
+    .stage-cell { font-size: 16px; line-height: 1; }
+    .stage-done    { color: var(--green); }
+    .stage-current { color: var(--blue); animation: pulse 1.5s infinite; }
+    .stage-error   { color: var(--red); }
+    .stage-pending { color: var(--border); }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    /* Metrics */
+    .metrics { color: var(--text-muted); font-size: 11px; }
+    .metrics .ok { color: var(--green); }
+    .metrics .err { color: var(--red); }
+    .elapsed { color: var(--text-muted); font-size: 11px; }
+    .error-cell { color: var(--red); font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Empty state */
+    .empty { text-align: center; color: var(--text-muted); padding: 40px; }
+
+    /* Node badges */
+    .node-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+    .node-8020 { background: #1a2436; color: var(--blue); border: 1px solid var(--blue); }
+    .node-8021 { background: #1a2e2e; color: #68d391; border: 1px solid #68d391; }
+
+    /* Legend */
+    .legend { display: flex; gap: 12px; padding: 8px 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+    .legend span { display: flex; align-items: center; gap: 4px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <span class="header-title">Scout Swarm Monitor</span>
+        <span class="header-status" style="margin-left:16px">
+          {{ lastUpdate || '' }}
+          <span v-if="loading" style="margin-left:8px; color: var(--blue)">...</span>
+        </span>
+      </div>
+      <div style="display:flex; gap:8px">
+        <span v-for="(ok, port) in nodeStatus" :key="port"
+              :class="['node-badge', 'node-' + port]">
+          :{{ port }} {{ ok ? 'OK' : 'X' }}
+        </span>
+      </div>
+    </div>
+
+    <div class="stats">
+      <span class="stat-badge stat-total">Всего: {{ jobs.length }}</span>
+      <span class="stat-badge stat-done">Done: {{ countBy('completed') }}</span>
+      <span class="stat-badge stat-running">Running: {{ countBy('running') }}</span>
+      <span class="stat-badge stat-failed">Failed: {{ countBy('failed') }}</span>
+      <span class="stat-badge stat-queued">Queued: {{ countBy('queued') }}</span>
+    </div>
+
+    <div class="controls">
+      <select v-model="filterStatus">
+        <option value="all">Все статусы</option>
+        <option value="running">Running</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="queued">Queued</option>
+      </select>
+      <input v-model="filterText" placeholder="Поиск по теме..." style="width:220px">
+      <select v-model="limitRows">
+        <option :value="50">50 строк</option>
+        <option :value="100">100 строк</option>
+        <option :value="200">200 строк</option>
+      </select>
+      <button @click="togglePause" :class="{paused: paused}">
+        {{ paused ? 'Resume' : 'Pause' }}
+      </button>
+      <button @click="fetchNow">Refresh</button>
+      <span style="color: var(--text-muted); font-size:11px; margin-left:4px">
+        auto {{ interval }}s
+      </span>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table v-if="filtered.length">
+      <thead>
+        <tr>
+          <th class="col-topic">Тема / Job ID</th>
+          <th class="col-model">Модель</th>
+          <th v-for="col in STAGE_COLS" :key="col.key" class="col-stage"
+              :title="col.stages.join(', ')">
+            {{ col.label }}
+          </th>
+          <th class="col-metrics">Docs / Chunks</th>
+          <th class="col-metrics">Elapsed</th>
+          <th style="min-width:140px">Сообщение / Ошибка</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="job in filtered" :key="job.job_id"
+            :class="'row-' + job.status">
+          <!-- Topic -->
+          <td class="col-topic" :title="job.topic">
+            <div class="topic-text">{{ truncate(job.topic, 50) }}</div>
+            <div class="topic-id">{{ job.job_id.slice(0,8) }}</div>
+          </td>
+          <!-- Model -->
+          <td class="col-model" style="color: var(--text-muted)">{{ job.model || '—' }}</td>
+          <!-- Stages -->
+          <td v-for="col in STAGE_COLS" :key="col.key" class="stage-cell">
+            <span :class="stageClass(job, col)">{{ stageIcon(job, col) }}</span>
+          </td>
+          <!-- Metrics -->
+          <td class="metrics">
+            <span :class="job.documents_count ? 'ok' : ''">
+              {{ job.documents_count != null ? job.documents_count : '—' }}
+            </span>
+            /
+            <span :class="job.chunks_count ? 'ok' : ''">
+              {{ job.chunks_count != null ? job.chunks_count : '—' }}
+            </span>
+            <div v-if="job.failed_count" class="err">fail:{{ job.failed_count }}</div>
+          </td>
+          <!-- Elapsed -->
+          <td class="elapsed">{{ formatElapsed(job.elapsed_sec) }}</td>
+          <!-- Message/Error -->
+          <td>
+            <div v-if="job.error" class="error-cell" :title="job.error">
+              {{ job.error }}
+            </div>
+            <div v-else class="error-cell" style="color:var(--text-muted)"
+                 :title="job.message">
+              {{ truncate(job.message, 60) }}
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty">
+      {{ loading ? 'Загрузка...' : 'Нет задач' }}
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="stage-done">OK</span><span>пройден</span>
+    <span class="stage-current">...</span><span>текущий</span>
+    <span class="stage-error">X</span><span>ошибка</span>
+    <span class="stage-pending">-</span><span>не достигнут</span>
+    <span style="margin-left:auto; color: var(--text-muted)">
+      Scout Monitor v1.0 | :{{ primaryPort }} + :{{ secondaryPort }}
+    </span>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted } = Vue
+
+// Configuration
+const PRIMARY_NODE   = "http://localhost:8020"
+const SECONDARY_NODE = "http://localhost:8021"
+
+// Stage columns in pipeline order
+const STAGE_COLS = [
+  { key: "queued",    label: "Очередь",    stages: ["queued"] },
+  { key: "urls",      label: "URL",         stages: ["waiting_for_urls", "collecting_urls", "urls_collected"] },
+  { key: "indexing",  label: "Индексация",  stages: ["stream_indexing", "test_indexing", "full_indexing", "starting"] },
+  { key: "test",      label: "Тест",        stages: ["test_passed", "test_failed"] },
+  { key: "ready",     label: "Готов",       stages: ["indexing_done"] },
+  { key: "brief",     label: "Бриф",        stages: ["generating_brief", "waiting_for_brief_slot"] },
+  { key: "done",      label: "Итог",        stages: ["completed", "error", "timeout"] },
+]
+
+// Stage ordering for "passed" logic
+const STAGE_ORDER = [
+  "queued",
+  "waiting_for_urls", "collecting_urls", "urls_collected",
+  "stream_indexing", "test_indexing", "full_indexing", "starting",
+  "test_passed", "test_failed",
+  "indexing_done",
+  "generating_brief", "waiting_for_brief_slot",
+  "completed", "error", "timeout",
+]
+
+function stageIndex(stage) {
+  const idx = STAGE_ORDER.indexOf(stage)
+  return idx === -1 ? 999 : idx
+}
+
+function colMaxIndex(col) {
+  return Math.max(...col.stages.map(stageIndex))
+}
+
+createApp({
+  setup() {
+    const jobs       = ref([])
+    const loading    = ref(false)
+    const paused     = ref(false)
+    const lastUpdate = ref(null)
+    const filterStatus = ref("all")
+    const filterText   = ref("")
+    const limitRows    = ref(100)
+    const nodeStatus   = ref({ 8020: null, 8021: null })
+    const interval     = ref(10)
+    let timer = null
+
+    // Fetch from one node
+    async function fetchNode(baseUrl, port) {
+      try {
+        const r = await fetch(baseUrl + "/api/jobs?limit=" + limitRows.value, {
+          signal: AbortSignal.timeout(5000),
+        })
+        if (!r.ok) throw new Error("HTTP " + r.status)
+        const data = await r.json()
+        nodeStatus.value[port] = true
+        return data.jobs || []
+      } catch (e) {
+        nodeStatus.value[port] = false
+        return []
+      }
+    }
+
+    async function fetchNow() {
+      if (loading.value) return
+      loading.value = true
+      try {
+        const [j1, j2] = await Promise.all([
+          fetchNode(PRIMARY_NODE, 8020),
+          fetchNode(SECONDARY_NODE, 8021),
+        ])
+        // Merge, prefer fresher updated_at
+        const map = new Map()
+        for (const j of [...j1, ...j2]) {
+          const ex = map.get(j.job_id)
+          if (!ex || (j.updated_at || "") > (ex.updated_at || "")) {
+            map.set(j.job_id, j)
+          }
+        }
+        jobs.value = Array.from(map.values())
+        lastUpdate.value = new Date().toLocaleTimeString("ru")
+      } finally {
+        loading.value = false
+      }
+    }
+
+    // Polling
+    function startTimer() {
+      timer = setInterval(function() { if (!paused.value) fetchNow() }, interval.value * 1000)
+    }
+    function togglePause() { paused.value = !paused.value }
+
+    onMounted(function() { fetchNow(); startTimer() })
+    onUnmounted(function() { clearInterval(timer) })
+
+    // Computed
+    const filtered = computed(function() {
+      var result = jobs.value.filter(function(j) {
+        if (filterStatus.value !== "all" && j.status !== filterStatus.value) return false
+        if (filterText.value && !(j.topic || "").toLowerCase().includes(filterText.value.toLowerCase())) return false
+        return true
+      })
+      // Sort: running -> queued -> completed -> failed
+      var ORDER = { running: 0, queued: 1, completed: 2, failed: 3 }
+      result.sort(function(a, b) {
+        var oa = ORDER[a.status] != null ? ORDER[a.status] : 9
+        var ob = ORDER[b.status] != null ? ORDER[b.status] : 9
+        if (oa !== ob) return oa - ob
+        return (b.updated_at || "") > (a.updated_at || "") ? 1 : -1
+      })
+      return result
+    })
+
+    function countBy(status) {
+      return jobs.value.filter(function(j) { return j.status === status }).length
+    }
+
+    // Stage logic
+    function stageClass(job, col) {
+      var currentIdx = stageIndex(job.stage)
+      var colMax = colMaxIndex(col)
+
+      if (col.stages.indexOf(job.stage) !== -1) {
+        if (job.status === "failed" || job.stage === "error" || job.stage === "timeout") {
+          return "stage-error"
+        }
+        if (job.status === "completed" && col.key === "done") return "stage-done"
+        return "stage-current"
+      }
+      if (currentIdx > colMax) return "stage-done"
+      return "stage-pending"
+    }
+
+    function stageIcon(job, col) {
+      var cls = stageClass(job, col)
+      if (cls === "stage-done")    return "OK"
+      if (cls === "stage-current") return "..."
+      if (cls === "stage-error")   return "X"
+      return "-"
+    }
+
+    // Formatting
+    function formatElapsed(sec) {
+      if (!sec) return "—"
+      var m = Math.floor(sec / 60), s = Math.round(sec % 60)
+      return m ? m + "m " + s + "s" : s + "s"
+    }
+
+    function truncate(str, n) {
+      if (!str) return ""
+      return str.length > n ? str.slice(0, n) + "..." : str
+    }
+
+    return {
+      jobs, loading, paused, lastUpdate, filterStatus, filterText,
+      limitRows, nodeStatus, interval,
+      STAGE_COLS, filtered, countBy, stageClass, stageIcon,
+      formatElapsed, truncate, fetchNow, togglePause,
+      primaryPort: 8020, secondaryPort: 8021,
+    }
+  }
+}).mount("#app")
+</script>
+</body>
+</html>

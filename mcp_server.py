@@ -1279,6 +1279,82 @@ async def scout_queue_status() -> dict:
     }
 
 
+# ── SC-040: REST API for Scout Monitor ────────────────────────────────
+
+
+@mcp.custom_route("/api/jobs", methods=["GET"])
+async def api_jobs(request):
+    """REST endpoint for Scout Monitor dashboard.
+
+    Query params:
+      limit  — max jobs to return (default 100)
+      status — filter: running/completed/failed/queued/all (default all)
+      since  — jobs updated after this ISO timestamp
+    """
+    import datetime as _dt
+
+    from starlette.responses import JSONResponse
+
+    params = request.query_params
+    limit = int(params.get("limit", 100))
+    status = params.get("status", "all")
+    since = params.get("since", None)
+
+    await _ensure_job_store()
+
+    async with _job_store._pool.acquire() as conn:
+        conditions = []
+        values = []
+        idx = 1
+
+        if status != "all":
+            conditions.append(f"status = ${idx}")
+            values.append(status)
+            idx += 1
+
+        if since:
+            conditions.append(f"updated_at > ${idx}")
+            values.append(since)
+            idx += 1
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        values.append(limit)
+
+        rows = await conn.fetch(
+            f"""SELECT job_id, topic, model, status, stage, message,
+                       total_urls, documents_count, chunks_count,
+                       failed_count, tokens_used, sources_used,
+                       session_id, error, elapsed_sec,
+                       created_at, updated_at
+               FROM async_jobs
+               {where}
+               ORDER BY created_at DESC
+               LIMIT ${idx}""",
+            *values,
+        )
+
+    jobs = []
+    for row in rows:
+        d = dict(row)
+        for key in ("created_at", "updated_at"):
+            if d.get(key):
+                d[key] = d[key].isoformat()
+        jobs.append(d)
+
+    return JSONResponse(
+        {
+            "jobs": jobs,
+            "total": len(jobs),
+            "node": _NODE_NAME,
+            "timestamp": _dt.datetime.utcnow().isoformat(),
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET",
+        },
+    )
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
     """Health check — проверяет PostgreSQL и ChromaDB."""

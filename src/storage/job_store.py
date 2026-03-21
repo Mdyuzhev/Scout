@@ -16,6 +16,7 @@ _COLUMNS = (
     "total_urls", "auto_collected", "test_docs", "test_chunks", "test_failed",
     "session_id", "documents_count", "chunks_count", "failed_count",
     "blocked_count", "brief", "tokens_used", "sources_used", "saved_to", "error",
+    "elapsed_sec",
 )
 
 
