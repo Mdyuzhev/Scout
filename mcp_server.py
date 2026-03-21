@@ -147,13 +147,15 @@ async def scout_brief(
     top_k: int = 10,
     model: str = "haiku",
 ) -> dict:
-    """Generate a research brief using LLM from indexed data.
+    """[DEPRECATED] Generate a research brief using LLM from indexed data.
 
-    Searches top-k relevant chunks and synthesizes a brief.
+    Deprecated since SC-036. Use scout_get_context() + agent LLM + scout_save_brief() instead.
+    Kept for backward compatibility — works only if ANTHROPIC_API_KEY is set on server.
 
     Args:
         model: LLM model — "haiku" (default), "sonnet", or "opus"
     """
+    logger.warning("scout_brief called — deprecated (SC-036). Use scout_get_context instead.")
     llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
     sid = UUID(session_id)
     result = await pipeline.brief(sid, query, top_k, model=llm_model)
@@ -267,45 +269,24 @@ async def scout_research(
         session.documents_count, len(failed_urls), blocked_count,
     )
 
-    # Шаг 2: генерация брифа
-    result = await pipeline.brief(session.id, query, top_k, model=llm_model)
-
-    brief_text = result.get("brief", "")
-
-    # Шаг 3: сохранить на диск если запрошено
-    saved_path = None
-    if save_to and brief_text:
-        try:
-            import os as _os
-            _os.makedirs(_os.path.dirname(save_to), exist_ok=True)
-            with open(save_to, "w", encoding="utf-8") as f:
-                f.write(f"# {topic}\n\n")
-                f.write(f"**Модель**: {result.get('model')}  \n")
-                f.write(f"**Токены**: {result.get('tokens_used')}  \n")
-                f.write(f"**Источников**: {result.get('sources_used', 0)}  \n")
-                f.write(f"**Session ID**: {session.id}  \n\n---\n\n")
-                f.write(brief_text)
-            saved_path = save_to
-            logger.info("scout_research: brief saved to {}", save_to)
-        except Exception as e:
-            logger.warning("scout_research: failed to save brief: {}", e)
-
+    # SC-039: brief generation removed from server side (SC-036 agent-first)
     return {
-        # Бриф
-        "brief":          brief_text,
-        "model":          result.get("model"),
-        "tokens_used":    result.get("tokens_used"),
-        "sources_used":   result.get("sources_used", 0),
-        # Сессия (для follow-up вызовов scout_search)
-        "session_id":     str(session.id),
-        # Статистика индексации
+        "brief":           None,
+        "model":           None,
+        "tokens_used":     None,
+        "sources_used":    0,
+        "session_id":      str(session.id),
         "documents_count": session.documents_count,
         "chunks_count":    session.chunks_count,
         "failed_count":    len(failed_urls),
         "blocked_count":   blocked_count,
-        "auto_collected_urls": len(collected_urls),
-        # Файл
-        "saved_to":        saved_path,
+        "auto_collected_urls": 0,
+        "saved_to":        None,
+        "message": (
+            f"Индексация завершена: {session.documents_count} docs. "
+            f"Используйте scout_get_context(session_id='{session.id}', query=...) "
+            f"для получения чанков и генерации брифа."
+        ),
     }
 
 
@@ -565,56 +546,17 @@ async def _run_research_job_stream(
             ),
         )
 
-        # Опубликовать сигнал готовности → briefer
-        await publish_index_ready(
-            job_id, session_id, total_docs, total_chunks, total_failed,
-        )
-
-        # ── Stage 3: ждать сигнала и генерировать бриф ───────────────
-        await _update("waiting_for_brief_slot",
-                      message="Ожидание слота для генерации брифа...")
-
-        ready_msg = await read_index_ready(job_id, consumer, block_ms=300_000)  # 5 мин
-        if ready_msg is None:
-            await _update("error", status="failed",
-                          error="Timeout waiting for ready signal")
-            return
-
-        ready_msg_id, ready_fields = ready_msg
-        await ack_ready_message(job_id, ready_msg_id)
-
-        await _update("generating_brief",
-                      message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
-
-        result = await pipeline.brief(session_id, query, top_k, model=llm_model)
-        brief_text = result.get("brief", "")
-
-        saved_path = None
-        if save_to and brief_text:
-            try:
-                os.makedirs(os.path.dirname(save_to), exist_ok=True)
-                with open(save_to, "w", encoding="utf-8") as f:
-                    f.write(f"# {topic}\n\n")
-                    f.write(f"**Модель**: {result.get('model')}  \n")
-                    f.write(f"**Токены**: {result.get('tokens_used')}  \n")
-                    f.write(f"**Источников**: {result.get('sources_used', 0)}  \n")
-                    f.write(f"**Session ID**: {session_id}  \n\n---\n\n")
-                    f.write(brief_text)
-                saved_path = save_to
-            except Exception as e:
-                logger.warning("job {}: failed to save brief: {}", job_id[:8], e)
-
+        # SC-039: brief generation removed — agent uses scout_get_context + scout_save_brief
         await _update(
             "completed",
             status="completed",
-            brief=brief_text,
-            model=result.get("model"),
-            tokens_used=result.get("tokens_used"),
-            sources_used=result.get("sources_used", 0),
-            saved_to=saved_path,
+            session_id=str(session_id),
+            documents_count=total_docs,
+            chunks_count=total_chunks,
+            failed_count=total_failed,
             message=(
-                f"Готово! {total_docs} docs, "
-                f"{result.get('tokens_used')} tokens, model={result.get('model')}"
+                f"Индексация завершена: {total_docs} docs, {total_chunks} chunks. "
+                f"Используйте scout_get_context(session_id='{session_id}') для генерации брифа."
             ),
         )
 
@@ -749,38 +691,20 @@ async def _run_research_job(
                     f"{session.chunks_count} chunks, {len(failed_urls)} failed.",
         )
 
-        # ── Stage 3: brief generation ───────────────────────────────
-        await _update("generating_brief", message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
-
-        result = await pipeline.brief(session.id, query, top_k, model=llm_model)
-        brief_text = result.get("brief", "")
-
-        # ── Stage 4: save to disk if requested ──────────────────────
-        saved_path = None
-        if save_to and brief_text:
-            try:
-                os.makedirs(os.path.dirname(save_to), exist_ok=True)
-                with open(save_to, "w", encoding="utf-8") as f:
-                    f.write(f"# {topic}\n\n")
-                    f.write(f"**Модель**: {result.get('model')}  \n")
-                    f.write(f"**Токены**: {result.get('tokens_used')}  \n")
-                    f.write(f"**Источников**: {result.get('sources_used', 0)}  \n")
-                    f.write(f"**Session ID**: {session.id}  \n\n---\n\n")
-                    f.write(brief_text)
-                saved_path = save_to
-            except Exception as e:
-                logger.warning("job {}: failed to save brief: {}", job_id[:8], e)
-
+        # SC-039: brief generation removed — agent uses scout_get_context + scout_save_brief
         await _update(
             "completed",
             status="completed",
-            brief=brief_text,
-            model=result.get("model"),
-            tokens_used=result.get("tokens_used"),
-            sources_used=result.get("sources_used", 0),
-            saved_to=saved_path,
-            message=f"Готово! {session.documents_count} docs, "
-                    f"{result.get('tokens_used')} tokens, model={result.get('model')}",
+            session_id=str(session.id),
+            documents_count=session.documents_count,
+            chunks_count=session.chunks_count,
+            failed_count=len(failed_urls),
+            blocked_count=blocked_count,
+            message=(
+                f"Индексация завершена: {session.documents_count} docs, "
+                f"{session.chunks_count} chunks. "
+                f"Используйте scout_get_context(session_id='{session.id}') для брифа."
+            ),
         )
 
     except Exception as exc:
