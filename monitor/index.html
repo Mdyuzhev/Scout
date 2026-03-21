@@ -62,7 +62,7 @@
     }
     th.col-topic { text-align: left; min-width: 200px; max-width: 280px; }
     th.col-model { width: 60px; }
-    th.col-stage { width: 80px; }
+    th.col-stage { width: 50px; }
     th.col-metrics { width: 90px; }
 
     tr.row-running   { background: var(--running-bg); }
@@ -154,23 +154,18 @@
     </div>
 
     <div class="controls">
-      <button @click="filterStatus = 'all'" :class="{paused: filterStatus === 'all'}">Все</button>
-      <button @click="filterStatus = 'running'" :class="{paused: filterStatus === 'running'}" style="color:var(--blue)">Running</button>
-      <button @click="filterStatus = 'queued'" :class="{paused: filterStatus === 'queued'}">Queued</button>
-      <button @click="filterStatus = 'completed'" :class="{paused: filterStatus === 'completed'}" style="color:var(--green)">Completed</button>
-      <button @click="filterStatus = 'failed'" :class="{paused: filterStatus === 'failed'}" style="color:var(--red)">Failed</button>
-      <span style="color:var(--border); margin:0 4px">|</span>
-      <input v-model="filterText" placeholder="Поиск по теме..." style="width:220px">
+      <input v-model="filterText" placeholder="Поиск по теме..." style="width:180px">
       <select v-model="limitRows">
-        <option :value="50">50 строк</option>
-        <option :value="100">100 строк</option>
-        <option :value="200">200 строк</option>
+        <option :value="50">50</option>
+        <option :value="100">100</option>
+        <option :value="200">200</option>
       </select>
       <button @click="togglePause" :class="{paused: paused}">
         {{ paused ? 'Resume' : 'Pause' }}
       </button>
       <button @click="fetchNow">Refresh</button>
-      <button @click="clearJobs('finished')" style="color:var(--red)">Clear done</button>
+      <span style="color:var(--border); margin:0 2px">|</span>
+      <button @click="clearJobs('finished')" style="color:var(--yellow)">Clear done</button>
       <button @click="clearJobs('all')" style="color:var(--red)">Clear all</button>
       <span style="color: var(--text-muted); font-size:11px; margin-left:4px">
         auto {{ interval }}s
@@ -268,13 +263,13 @@ const PRIMARY_NODE   = "http://192.168.1.74:8020"
 const SECONDARY_NODE = "http://192.168.1.74:8021"
 
 const STAGE_COLS = [
-  { key: "queued",    label: "Очередь",    stages: ["queued"] },
-  { key: "urls",      label: "URL",         stages: ["waiting_for_urls", "collecting_urls", "urls_collected"] },
-  { key: "indexing",  label: "Индексация",  stages: ["stream_indexing", "test_indexing", "full_indexing", "starting"] },
-  { key: "test",      label: "Тест",        stages: ["test_passed", "test_failed"] },
-  { key: "ready",     label: "Готов",       stages: ["indexing_done"] },
-  { key: "brief",     label: "Бриф",        stages: ["generating_brief", "waiting_for_brief_slot"] },
-  { key: "done",      label: "Итог",        stages: ["completed", "error", "timeout"] },
+  { key: "queued",    label: "Q",    stages: ["queued"] },
+  { key: "urls",      label: "URL",  stages: ["waiting_for_urls", "collecting_urls", "urls_collected"] },
+  { key: "indexing",  label: "IDX",  stages: ["stream_indexing", "test_indexing", "full_indexing", "starting"] },
+  { key: "test",      label: "TST",  stages: ["test_passed", "test_failed"] },
+  { key: "ready",     label: "RDY",  stages: ["indexing_done"] },
+  { key: "brief",     label: "BRF",  stages: ["generating_brief", "waiting_for_brief_slot"] },
+  { key: "done",      label: "END",  stages: ["completed", "error", "timeout"] },
 ]
 
 const STAGE_ORDER = [
@@ -310,7 +305,6 @@ createApp({
     var loading    = ref(false)
     var paused     = ref(false)
     var lastUpdate = ref(null)
-    var filterStatus = ref("all")
     var filterText = ref("")
     var limitRows  = ref(100)
     var nodeStatus = ref({ 8020: null, 8021: null })
@@ -375,12 +369,12 @@ createApp({
     onMounted(function() { fetchNow(); startTimer() })
     onUnmounted(function() { clearInterval(timer) })
 
-    // Filter jobs by status + text
+    // Filter jobs by text
     var filteredJobs = computed(function() {
+      if (!filterText.value) return jobs.value
+      var q = filterText.value.toLowerCase()
       return jobs.value.filter(function(j) {
-        if (filterStatus.value !== "all" && j.status !== filterStatus.value) return false
-        if (filterText.value && (j.topic || "").toLowerCase().indexOf(filterText.value.toLowerCase()) === -1) return false
-        return true
+        return (j.topic || "").toLowerCase().indexOf(q) !== -1
       })
     })
 
@@ -460,7 +454,7 @@ createApp({
     }
 
     return {
-      jobs, loading, paused, lastUpdate, filterStatus, filterText,
+      jobs, loading, paused, lastUpdate, filterText,
       limitRows, nodeStatus, interval,
       STAGE_COLS, groups, countBy, stageClass, stageIcon,
       formatElapsed, truncate, fetchNow, togglePause, toggleGroup, clearJobs,
