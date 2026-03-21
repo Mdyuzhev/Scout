@@ -91,6 +91,17 @@ class Indexer:
         )
         return total
 
+    def index_append(self, chunks: list[Chunk], session_id: UUID) -> int:
+        """Append chunks to existing session collection (incremental indexing).
+
+        Safe to call multiple times for the same session_id.
+        ChromaDB get_or_create_collection + add() is idempotent by chunk ID.
+        Returns count of chunks added in this call.
+        """
+        if not chunks:
+            return 0
+        return self.index(chunks, session_id)
+
     def delete_collection(self, session_id: UUID) -> None:
         """Remove ChromaDB collection — cleanup on indexing failure."""
         collection_name = f"session_{session_id.hex}"

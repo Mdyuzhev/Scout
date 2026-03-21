@@ -151,6 +151,9 @@ class Settings(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "mistral"
 
+    redis_url: str = "redis://scout-redis:6379/0"
+    redis_streaming: bool = False   # включить через env REDIS_STREAMING=true
+
     default_depth: DepthLevel = DepthLevel.NORMAL
     default_cache_ttl_hours: int = 24
     min_similarity: float = 0.60
@@ -183,6 +186,8 @@ class Settings(BaseModel):
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "mistral"),
+            redis_url=os.getenv("REDIS_URL", "redis://scout-redis:6379/0"),
+            redis_streaming=os.getenv("REDIS_STREAMING", "false").lower() == "true",
             default_depth=DepthLevel(os.getenv("DEFAULT_DEPTH", "normal")),
             default_cache_ttl_hours=int(
                 os.getenv("DEFAULT_CACHE_TTL_HOURS", "24")

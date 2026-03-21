@@ -284,6 +284,313 @@ MODEL_MAP = {
 
 TEST_BATCH_SIZE = 10
 
+# Имя этого узла — используется как consumer name в Redis Streams
+_NODE_NAME = f"node-{os.getenv('MCP_PORT', '8020')}"
+
+
+async def _run_research_job_stream(
+    job_id: str,
+    topic: str,
+    source_urls: list[str],
+    query: str,
+    top_k: int,
+    llm_model: str,
+    language: str,
+    save_to: str | None,
+    auto_collect: bool = False,
+    auto_collect_count: int = 150,
+) -> None:
+    """
+    Streaming pipeline через Redis Streams.
+
+    Стейджи:
+      0. collecting_urls   → Haiku пишет батчи в URL stream по мере готовности
+      1. stream_indexing   → этот узел читает батчи из URL stream и индексирует
+         (параллельно: второй узел тоже читает и индексирует свои батчи)
+      2. indexing_done     → все URL проиндексированы, сигнал в ready stream
+      3. generating_brief  → первый свободный узел генерирует бриф
+      4. completed / error
+    """
+    from src.config import SourceType, ResearchSession, SessionStatus
+    from src.streaming.url_stream import (
+        read_url_batch, ack_url_message,
+        read_index_ready, ack_ready_message,
+        publish_index_ready, publish_url_abort,
+        cleanup_streams,
+    )
+
+    await _ensure_job_store()
+
+    import time as _time
+    _job_start = _time.monotonic()
+
+    async def _update(stage: str, **kw):
+        elapsed = round(_time.monotonic() - _job_start, 1)
+        kw["stage"] = stage
+        kw["elapsed_sec"] = elapsed
+        await _job_store.update(job_id, **kw)
+        logger.info("job {} [{}s] stream: {}", job_id[:8], elapsed, stage)
+
+    consumer = _NODE_NAME
+
+    try:
+        # ── Stage 0: запустить сбор URL (async, не блокируем) ────────
+        if auto_collect:
+            await _update("collecting_urls",
+                          message=f"Haiku собирает URL, узел {consumer} готов к индексации...")
+            from src.ingestion.url_collector import collect_urls_streaming
+            asyncio.create_task(
+                collect_urls_streaming(
+                    topic=topic,
+                    job_id=job_id,
+                    language=language,
+                    n_urls=auto_collect_count,
+                )
+            )
+        else:
+            # Явный список URL — публикуем одним батчем сразу
+            from src.streaming.url_stream import (
+                ensure_stream_groups, publish_url_batch, publish_url_eof,
+            )
+            await ensure_stream_groups(job_id)
+            if source_urls:
+                await publish_url_batch(job_id, source_urls, "manual")
+            await publish_url_eof(job_id, len(source_urls))
+
+        # ── Stage 1: читать URL батчи из стрима и индексировать ──────
+        await _update("stream_indexing",
+                      message=f"Узел {consumer} читает URL stream и индексирует...")
+
+        # Создать сессию заранее
+        from uuid import uuid4 as _uuid4
+        session_id = _uuid4()
+        session_config = ResearchConfig(
+            topic=topic,
+            depth=DepthLevel.NORMAL,
+            language=language,
+            llm_provider=LLMProvider.ANTHROPIC,
+            cache_ttl_hours=0,
+            source_type=SourceType.SPECIFIC_URLS,
+            source_urls=[],
+        )
+        session = ResearchSession(
+            id=session_id,
+            config=session_config,
+            status=SessionStatus.INDEXING,
+        )
+        await pipeline._ensure_init()
+        await pipeline._session_store.save(session)
+
+        total_docs = 0
+        total_chunks = 0
+        total_failed = 0
+        test_passed = False
+        eof_received = False
+
+        IDLE_TIMEOUT_MS = 120_000  # 2 мин без новых сообщений
+        consecutive_empty = 0
+
+        while not eof_received:
+            msg = await read_url_batch(job_id, consumer, block_ms=5000)
+
+            if msg is None:
+                consecutive_empty += 1
+                if consecutive_empty * 5000 > IDLE_TIMEOUT_MS:
+                    logger.warning(
+                        "job {} stream: idle timeout, assuming all batches processed",
+                        job_id[:8],
+                    )
+                    break
+                continue
+
+            consecutive_empty = 0
+            msg_id, fields = msg
+            msg_type = fields.get("type", "batch")
+
+            if msg_type == "abort":
+                await ack_url_message(job_id, msg_id)
+                await _update("error", status="failed",
+                              error=f"Aborted: {fields.get('reason', 'unknown')}")
+                return
+
+            if msg_type == "eof":
+                await ack_url_message(job_id, msg_id)
+                eof_received = True
+                logger.info("job {} stream: EOF received", job_id[:8])
+                continue
+
+            if msg_type != "batch":
+                await ack_url_message(job_id, msg_id)
+                continue
+
+            # Обработка батча URL
+            batch_urls = [u for u in fields.get("urls", "").split("\n") if u.strip()]
+            batch_label = fields.get("batch_label", "?")
+
+            if not batch_urls:
+                await ack_url_message(job_id, msg_id)
+                continue
+
+            # Тест на первых 10 URL первого батча
+            if not test_passed:
+                test_urls = batch_urls[:TEST_BATCH_SIZE]
+                test_config = ResearchConfig(
+                    topic=f"[test] {topic}",
+                    depth=DepthLevel.NORMAL,
+                    language=language,
+                    llm_provider=LLMProvider.ANTHROPIC,
+                    cache_ttl_hours=0,
+                    source_type=SourceType.SPECIFIC_URLS,
+                    source_urls=test_urls,
+                )
+                test_session, _, _ = await pipeline.index(test_config)
+                if (test_session.status.value != "ready"
+                        or test_session.documents_count == 0
+                        or test_session.chunks_count == 0):
+                    await ack_url_message(job_id, msg_id)
+                    await publish_url_abort(
+                        job_id,
+                        f"test failed: docs={test_session.documents_count}, "
+                        f"chunks={test_session.chunks_count}",
+                    )
+                    await _update(
+                        "test_failed", status="failed",
+                        error=f"Тест провален: docs={test_session.documents_count}",
+                    )
+                    return
+                test_passed = True
+                await _update("test_passed",
+                              message="Тест пройден, индексирую оставшиеся батчи...")
+
+            # Индексировать батч через append
+            try:
+                batch_config = ResearchConfig(
+                    topic=topic,
+                    depth=DepthLevel.NORMAL,
+                    language=language,
+                    llm_provider=LLMProvider.ANTHROPIC,
+                    cache_ttl_hours=0,
+                    source_type=SourceType.SPECIFIC_URLS,
+                    source_urls=batch_urls,
+                )
+                docs, failed_urls, blocked = await pipeline._web_collector.collect(batch_config)
+                chunks_list = []
+                for doc in docs:
+                    chunks_list.extend(pipeline._chunker.chunk(doc))
+
+                if chunks_list:
+                    indexed = pipeline._indexer.index_append(chunks_list, session_id)
+                    total_chunks += indexed
+
+                total_docs += len(docs)
+                total_failed += len(failed_urls)
+
+                session.documents_count = total_docs
+                session.chunks_count = total_chunks
+                await pipeline._session_store.save(session)
+
+                await _update(
+                    "stream_indexing",
+                    documents_count=total_docs,
+                    chunks_count=total_chunks,
+                    failed_count=total_failed,
+                    message=(
+                        f"Батч {batch_label}: +{len(docs)} docs, "
+                        f"итого {total_docs} docs / {total_chunks} chunks"
+                    ),
+                )
+
+            except Exception as exc:
+                logger.error("job {} batch {} indexing failed: {}", job_id[:8], batch_label, exc)
+            finally:
+                await ack_url_message(job_id, msg_id)
+
+        # Финализировать сессию
+        if total_chunks == 0:
+            session.status = SessionStatus.FAILED
+            session.error = "0 chunks after stream indexing"
+            await pipeline._session_store.save(session)
+            await _update("error", status="failed", error="0 chunks indexed")
+            return
+
+        session.status = SessionStatus.READY
+        from datetime import datetime as _dt
+        session.completed_at = _dt.utcnow()
+        await pipeline._session_store.save(session)
+
+        await _update(
+            "indexing_done",
+            session_id=str(session_id),
+            documents_count=total_docs,
+            chunks_count=total_chunks,
+            failed_count=total_failed,
+            message=(
+                f"Индексация завершена: {total_docs} docs, "
+                f"{total_chunks} chunks, {total_failed} failed."
+            ),
+        )
+
+        # Опубликовать сигнал готовности → briefer
+        await publish_index_ready(
+            job_id, session_id, total_docs, total_chunks, total_failed,
+        )
+
+        # ── Stage 3: ждать сигнала и генерировать бриф ───────────────
+        await _update("waiting_for_brief_slot",
+                      message="Ожидание слота для генерации брифа...")
+
+        ready_msg = await read_index_ready(job_id, consumer, block_ms=300_000)  # 5 мин
+        if ready_msg is None:
+            await _update("error", status="failed",
+                          error="Timeout waiting for ready signal")
+            return
+
+        ready_msg_id, ready_fields = ready_msg
+        await ack_ready_message(job_id, ready_msg_id)
+
+        await _update("generating_brief",
+                      message=f"Генерация брифа (model={llm_model}, top_k={top_k})...")
+
+        result = await pipeline.brief(session_id, query, top_k, model=llm_model)
+        brief_text = result.get("brief", "")
+
+        saved_path = None
+        if save_to and brief_text:
+            try:
+                os.makedirs(os.path.dirname(save_to), exist_ok=True)
+                with open(save_to, "w", encoding="utf-8") as f:
+                    f.write(f"# {topic}\n\n")
+                    f.write(f"**Модель**: {result.get('model')}  \n")
+                    f.write(f"**Токены**: {result.get('tokens_used')}  \n")
+                    f.write(f"**Источников**: {result.get('sources_used', 0)}  \n")
+                    f.write(f"**Session ID**: {session_id}  \n\n---\n\n")
+                    f.write(brief_text)
+                saved_path = save_to
+            except Exception as e:
+                logger.warning("job {}: failed to save brief: {}", job_id[:8], e)
+
+        await _update(
+            "completed",
+            status="completed",
+            brief=brief_text,
+            model=result.get("model"),
+            tokens_used=result.get("tokens_used"),
+            sources_used=result.get("sources_used", 0),
+            saved_to=saved_path,
+            message=(
+                f"Готово! {total_docs} docs, "
+                f"{result.get('tokens_used')} tokens, model={result.get('model')}"
+            ),
+        )
+
+    except Exception as exc:
+        tb = traceback.format_exc()
+        await _update("error", status="failed", error=str(exc), traceback=tb)
+        logger.error("job {} stream failed:\n{}", job_id[:8], tb)
+
+    finally:
+        await cleanup_streams(job_id)
+
 
 async def _run_research_job(
     job_id: str,
@@ -510,8 +817,13 @@ async def scout_research_async(
 
     async def _run_with_timeout() -> None:
         try:
+            job_fn = (
+                _run_research_job_stream
+                if settings.redis_streaming
+                else _run_research_job
+            )
             await asyncio.wait_for(
-                _run_research_job(
+                job_fn(
                     job_id, topic, initial_urls, query, top_k, llm_model,
                     language, save_to, auto_collect, auto_collect_count,
                 ),
@@ -611,6 +923,16 @@ async def health(request):
             checks["chroma"] = "ok" if r.status_code == 200 else f"status {r.status_code}"
     except Exception as exc:
         checks["chroma"] = f"error: {exc}"
+
+    # Redis (только если streaming включён)
+    if settings.redis_streaming:
+        try:
+            from src.streaming.redis_client import get_redis
+            r = await get_redis()
+            await r.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = f"error: {exc}"
 
     all_ok = all(v == "ok" for v in checks.values())
     return JSONResponse(
