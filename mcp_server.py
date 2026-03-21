@@ -25,6 +25,29 @@ async def _ensure_job_store() -> None:
     if not _job_store_initialized:
         await _job_store.init()
         _job_store_initialized = True
+    # SC-037: lazy-start worker loop on first tool call
+    await _ensure_worker_loop()
+
+
+# ── SC-037: Worker Pool ──────────────────────────────────────────────
+MAX_WORKERS_PER_NODE = settings.max_workers_per_node
+_worker_semaphore: asyncio.Semaphore | None = None
+_worker_started = False
+
+
+def _get_worker_semaphore() -> asyncio.Semaphore:
+    global _worker_semaphore
+    if _worker_semaphore is None:
+        _worker_semaphore = asyncio.Semaphore(MAX_WORKERS_PER_NODE)
+    return _worker_semaphore
+
+
+async def _ensure_worker_loop() -> None:
+    """Lazy-start the worker loop (once per process)."""
+    global _worker_started
+    if not _worker_started and settings.redis_streaming:
+        _worker_started = True
+        asyncio.create_task(_worker_loop())
 
 
 @mcp.tool()
@@ -1112,6 +1135,222 @@ async def scout_save_brief(
     except Exception as exc:
         logger.error("scout_save_brief failed: {}", exc)
         return {"error": str(exc)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# SC-037: Worker Pool — queue-based parallelism control
+# ──────────────────────────────────────────────────────────────────────
+
+
+async def _worker_loop() -> None:
+    """
+    Persistent worker: reads jobs from Redis queue, executes with semaphore.
+    Starts once per node, never stops. Launched via _ensure_worker_loop().
+    """
+    from src.streaming.job_queue import (
+        dequeue_job, ack_job, requeue_failed, ensure_queue,
+    )
+
+    await ensure_queue()
+    reclaimed = await requeue_failed(_NODE_NAME, min_idle_ms=300_000)
+    if reclaimed:
+        logger.info("worker_loop {}: reclaimed {} abandoned jobs", _NODE_NAME, reclaimed)
+
+    logger.info(
+        "worker_loop {}: started (MAX_WORKERS_PER_NODE={})",
+        _NODE_NAME, MAX_WORKERS_PER_NODE,
+    )
+
+    sem = _get_worker_semaphore()
+
+    while True:
+        try:
+            await sem.acquire()
+            try:
+                result = await dequeue_job(_NODE_NAME, block_ms=30_000)
+                if result is None:
+                    sem.release()
+                    continue
+
+                msg_id, job_params = result
+                asyncio.create_task(_run_queued_job(msg_id, job_params, sem))
+            except Exception:
+                sem.release()
+                raise
+
+        except Exception as exc:
+            logger.error("worker_loop {}: loop error: {}", _NODE_NAME, exc)
+            await asyncio.sleep(5)
+
+
+async def _run_queued_job(
+    msg_id: str, job_params: dict, sem: asyncio.Semaphore
+) -> None:
+    """Execute a queued job and release semaphore when done."""
+    from src.streaming.job_queue import ack_job
+
+    job_id = job_params["job_id"]
+    try:
+        await _ensure_job_store()
+        await _job_store.update(
+            job_id,
+            status="running",
+            stage="starting",
+            message=f"Взято воркером {_NODE_NAME}",
+        )
+
+        job_fn = (
+            _run_research_job_stream
+            if settings.redis_streaming
+            else _run_research_job
+        )
+        await asyncio.wait_for(
+            job_fn(
+                job_id=job_id,
+                topic=job_params["topic"],
+                source_urls=job_params.get("source_urls", []),
+                query=job_params["query"],
+                top_k=job_params.get("top_k", 10),
+                llm_model=job_params["llm_model"],
+                language=job_params.get("language", "ru"),
+                save_to=job_params.get("save_to"),
+                auto_collect=False,
+                auto_collect_count=0,
+            ),
+            timeout=3600.0,
+        )
+
+    except asyncio.TimeoutError:
+        await _job_store.update(
+            job_id, status="failed", stage="timeout",
+            error="Job exceeded 1h timeout in worker",
+        )
+        logger.error("worker_loop {}: job {} timed out", _NODE_NAME, job_id[:8])
+
+    except Exception as exc:
+        tb = traceback.format_exc()
+        await _job_store.update(
+            job_id, status="failed", stage="error", error=str(exc),
+        )
+        logger.error("worker_loop {}: job {} failed:\n{}", _NODE_NAME, job_id[:8], tb)
+
+    finally:
+        await ack_job(msg_id)
+        sem.release()
+        logger.info("worker_loop {}: job {} done, slot released", _NODE_NAME, job_id[:8])
+
+
+@mcp.tool()
+async def scout_enqueue(
+    topic: str,
+    query: str,
+    source_urls: list[str] | None = None,
+    top_k: int = 10,
+    model: str = "haiku",
+    language: str = "ru",
+    save_to: str | None = None,
+    priority: int = 0,
+) -> dict:
+    """Add a research job to the queue. Workers pick it up when a slot is free.
+
+    Unlike scout_research_async (which starts immediately),
+    scout_enqueue puts the job in Redis queue.
+    Each node processes MAX_WORKERS_PER_NODE=2 jobs at a time.
+    Remaining jobs wait in queue until a slot opens.
+
+    Use for swarm runs (many tasks) to avoid node overload.
+    Use scout_research_async for single interactive tasks.
+
+    Args:
+        source_urls: URLs to index (agent collects them, then enqueues)
+        priority:    Higher = processed first (default 0)
+
+    Returns:
+        job_id:       Track progress via scout_job_status(job_id)
+        queue_depth:  Jobs waiting in queue after this one
+        msg_id:       Redis stream message ID
+    """
+    if not source_urls:
+        return {"error": "source_urls required for scout_enqueue. Collect URLs first, then enqueue."}
+
+    from src.streaming.job_queue import enqueue_job, queue_length
+
+    await _ensure_job_store()
+    llm_model = MODEL_MAP.get(model, MODEL_MAP["haiku"])
+    job_id = str(uuid4())
+
+    await _job_store.create({
+        "job_id": job_id,
+        "topic": topic,
+        "query": query,
+        "model": model,
+        "status": "queued",
+        "stage": "queued",
+        "total_urls": len(source_urls),
+        "message": f"В очереди. URL: {len(source_urls)}. Ждёт свободного слота на воркере.",
+    })
+
+    job_params = {
+        "job_id": job_id,
+        "topic": topic,
+        "source_urls": source_urls,
+        "query": query,
+        "top_k": top_k,
+        "llm_model": llm_model,
+        "language": language,
+        "save_to": save_to,
+        "priority": priority,
+    }
+    msg_id = await enqueue_job(job_params)
+    depth = await queue_length()
+
+    logger.info(
+        "scout_enqueue: job {} queued ({} URLs, queue_depth={})",
+        job_id[:8], len(source_urls), depth,
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "msg_id": msg_id,
+        "queue_depth": depth,
+        "total_urls": len(source_urls),
+        "message": (
+            f"Задача поставлена в очередь. "
+            f"Отслеживайте: scout_job_status(job_id='{job_id}'). "
+            f"Задач в очереди: {depth}."
+        ),
+    }
+
+
+@mcp.tool()
+async def scout_queue_status() -> dict:
+    """Get current state of the job queue and workers on this node.
+
+    Returns:
+        queue_depth:     Jobs waiting in queue
+        active_slots:    Slots currently in use on this node
+        free_slots:      Available slots on this node
+        max_slots:       MAX_WORKERS_PER_NODE for this node
+        node:            This node name
+    """
+    from src.streaming.job_queue import queue_length
+
+    sem = _get_worker_semaphore()
+    active = MAX_WORKERS_PER_NODE - sem._value
+    depth = await queue_length()
+
+    return {
+        "node": _NODE_NAME,
+        "queue_depth": depth,
+        "active_slots": active,
+        "free_slots": sem._value,
+        "max_slots": MAX_WORKERS_PER_NODE,
+        "message": (
+            f"Узел {_NODE_NAME}: {active}/{MAX_WORKERS_PER_NODE} слотов занято. "
+            f"В очереди: {depth} задач."
+        ),
+    }
 
 
 @mcp.custom_route("/health", methods=["GET"])

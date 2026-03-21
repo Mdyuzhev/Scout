@@ -153,6 +153,7 @@ class Settings(BaseModel):
 
     redis_url: str = "redis://scout-redis:6379/0"
     redis_streaming: bool = False   # включить через env REDIS_STREAMING=true
+    max_workers_per_node: int = 2   # SC-037: max parallel indexing jobs per node
 
     default_depth: DepthLevel = DepthLevel.NORMAL
     default_cache_ttl_hours: int = 24
@@ -188,6 +189,7 @@ class Settings(BaseModel):
             ollama_model=os.getenv("OLLAMA_MODEL", "mistral"),
             redis_url=os.getenv("REDIS_URL", "redis://scout-redis:6379/0"),
             redis_streaming=os.getenv("REDIS_STREAMING", "false").lower() == "true",
+            max_workers_per_node=int(os.getenv("MAX_WORKERS_PER_NODE", "2")),
             default_depth=DepthLevel(os.getenv("DEFAULT_DEPTH", "normal")),
             default_cache_ttl_hours=int(
                 os.getenv("DEFAULT_CACHE_TTL_HOURS", "24")

@@ -282,6 +282,7 @@ curl -s -X POST http://localhost:8020/mcp \
 | SC-033 | stabilization (13 fixes) | ✅ выполнена |
 | SC-034 | redis-streaming | ✅ выполнена |
 | SC-036 | agent-first-pipeline | ✅ выполнена |
+| SC-037 | worker-pool | ✅ выполнена |
 
 Задачи: `Tasks/backlog/` (в работе), `Tasks/done/` (выполненные)
 
