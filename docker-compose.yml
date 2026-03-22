@@ -85,9 +85,32 @@ services:
     networks:
       - scout-net
 
+  diser-rag:
+    build: .
+    container_name: diser-rag
+    env_file: .env
+    ports:
+      - "8031:8031"
+    environment:
+      - SERVER_PORT=8031
+    volumes:
+      - diser_chroma_data:/app/data/diser_chroma
+      - /opt/scout/diser_briefs:/opt/scout/diser_briefs:ro
+    command: ["python", "src/diser_rag/server.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8031/health')\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - scout-net
+
 volumes:
   scout_postgres_data:
   scout_chroma_data:
+  diser_chroma_data:
 
 networks:
   scout-net:
