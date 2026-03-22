@@ -299,7 +299,7 @@ MODEL_MAP = {
 TEST_BATCH_SIZE = 10
 
 # Имя этого узла — используется как consumer name в Redis Streams
-_NODE_NAME = f"node-{os.getenv('MCP_PORT', '8020')}"
+_NODE_NAME = os.getenv("MCP_NODE_NAME", f"node-{os.getenv('MCP_PORT', '8020')}")
 
 
 async def _run_research_job_stream(
@@ -1004,6 +1004,49 @@ async def scout_get_context(
     return await pipeline.get_context_for_brief(sid, query, top_k)
 
 
+async def _notify_diser_rag(
+    brief_text: str,
+    saved_path: str,
+    session_id: str,
+) -> None:
+    """Fire-and-forget: push saved brief into diser-rag index (SC-043)."""
+    import re as _re
+    from pathlib import Path as _Path
+
+    diser_rag_url = os.getenv("DISER_RAG_URL", "http://diser-rag:8031")
+    try:
+        p = _Path(saved_path)
+        stem = p.stem
+        swarm = p.parent.name
+        m = _re.search(r"(SW\d+-\d+)", stem)
+        brief_id = m.group(1) if m else stem
+        topic = _re.sub(r"SW\d+-\d+_?", "", stem).strip("-_") or stem
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{diser_rag_url}/index_brief",
+                json={
+                    "text":     brief_text,
+                    "brief_id": brief_id,
+                    "swarm":    swarm,
+                    "topic":    topic,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(
+                    "diser-rag indexed {}: +{} chunks (total={})",
+                    brief_id, data.get("indexed", 0), data.get("total_chunks", 0),
+                )
+            else:
+                logger.warning(
+                    "diser-rag /index_brief failed for {}: status={}",
+                    brief_id, resp.status_code,
+                )
+    except Exception as exc:
+        logger.warning("_notify_diser_rag failed (non-fatal): {}", exc)
+
+
 @mcp.tool()
 async def scout_save_brief(
     session_id: str,
@@ -1044,6 +1087,8 @@ async def scout_save_brief(
                     f.write(f"**Session ID**: {session_id}  \n\n---\n\n")
                     f.write(brief)
                 saved_path = save_to
+                # SC-043: async push to diser-rag (fire-and-forget)
+                asyncio.create_task(_notify_diser_rag(brief, saved_path, session_id))
             except Exception as e:
                 logger.warning("scout_save_brief: failed to save to disk: {}", e)
 
