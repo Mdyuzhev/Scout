@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 from src.diser_rag import config
-from src.diser_rag.indexer import index as run_index
+from src.diser_rag.indexer import index as run_index, index_text
 from src.diser_rag.searcher import Searcher
 from src.diser_rag.synthesizer import get_context
 
@@ -51,6 +51,13 @@ class SearchRequest(BaseModel):
 class IndexRequest(BaseModel):
     swarm: str | None = None
 
+class IndexBriefRequest(BaseModel):
+    text: str
+    brief_id: str
+    swarm: str
+    topic: str
+    domain: str | None = None
+
 
 # --- Endpoints ---
 
@@ -69,6 +76,20 @@ def health():
 def index_endpoint(req: IndexRequest):
     result = run_index(swarm_filter=req.swarm)
     # Reload searcher to pick up new chunks
+    get_searcher().reload()
+    return result
+
+
+@app.post("/index_brief")
+def index_brief_endpoint(req: IndexBriefRequest):
+    """Index a single brief from text (called by scout_save_brief, SC-043)."""
+    result = index_text(
+        text=req.text,
+        brief_id=req.brief_id,
+        swarm=req.swarm,
+        topic=req.topic,
+        domain=req.domain,
+    )
     get_searcher().reload()
     return result
 
