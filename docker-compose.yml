@@ -86,7 +86,7 @@ services:
       - scout-net
 
   diser-rag:
-    build: .
+    image: scout-scout-mcp:latest
     container_name: diser-rag
     env_file: .env
     ports:
@@ -96,13 +96,14 @@ services:
     volumes:
       - diser_chroma_data:/app/data/diser_chroma
       - /opt/scout/diser_briefs:/opt/scout/diser_briefs:ro
-    command: ["python", "src/diser_rag/server.py"]
+      - ./src/diser_rag:/app/src/diser_rag:ro
+    command: ["sh", "-c", "pip install -q fastapi uvicorn && python src/diser_rag/server.py"]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8031/health')\""]
       interval: 30s
       timeout: 10s
-      start_period: 30s
-      retries: 3
+      start_period: 60s
+      retries: 5
     restart: unless-stopped
     networks:
       - scout-net
