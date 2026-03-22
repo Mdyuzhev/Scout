@@ -1,6 +1,10 @@
-"""Diser RAG — synthesizer: search + Anthropic API -> academic answer."""
+"""Diser RAG — synthesizer: search + context assembly.
 
-import anthropic
+SC-042 fix: no server-side LLM calls.
+/ask returns context chunks for the agent to synthesize.
+Agent generates the answer using its own LLM (subscription), same as Scout SC-036.
+"""
+
 from loguru import logger
 
 from . import config
@@ -14,24 +18,38 @@ SYSTEM_PROMPT = """Ты — аналитик диссертационного и
 Не добавляй информацию из общих знаний."""
 
 
-def synthesize(
+def get_context(
     query: str,
     searcher: Searcher,
     domain: str | None = None,
     swarm: str | None = None,
 ) -> dict:
-    """Search + LLM synthesis."""
+    """Search and return context for agent-side synthesis.
+
+    Returns:
+        context:        assembled text ready to pass to LLM
+        sources:        list of source metadata
+        chunks_count:   number of chunks found
+        system_prompt:  prompt to use when generating the answer
+        found:          True if any results found
+    """
     results = searcher.search(query, domain=domain, swarm=swarm)
 
     if not results:
+        logger.info(f"No results for query: '{query[:60]}'")
         return {
-            "answer": "В проиндексированных материалах не найдено релевантных данных по данному запросу.",
+            "found": False,
+            "context": "",
             "sources": [],
+            "chunks_count": 0,
+            "system_prompt": SYSTEM_PROMPT,
+            "message": "В проиндексированных материалах не найдено релевантных данных.",
         }
 
     context_parts = []
     sources = []
-    seen_briefs = set()
+    seen_briefs: set[str] = set()
+
     for r in results:
         context_parts.append(
             f"[{r.brief_id}] ({r.swarm}, {r.topic}):\n{r.text[:2000]}"
@@ -48,20 +66,18 @@ def synthesize(
 
     context = "\n\n---\n\n".join(context_parts)
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    resp = client.messages.create(
-        model=config.LLM_MODEL,
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Контекст из исследовательских брифов:\n\n{context}\n\n---\n\nВопрос: {query}",
-            }
-        ],
+    logger.info(
+        f"Context assembled for '{query[:60]}': "
+        f"{len(results)} chunks, {len(sources)} unique briefs"
     )
 
-    answer = resp.content[0].text if resp.content else "Ошибка генерации ответа."
-    logger.info(f"Synthesized answer for '{query[:60]}...' using {len(results)} chunks")
-
-    return {"answer": answer, "sources": sources}
+    return {
+        "found": True,
+        "context": context,
+        "sources": sources,
+        "chunks_count": len(results),
+        "system_prompt": SYSTEM_PROMPT,
+        "user_prompt": (
+            f"Контекст из исследовательских брифов:\n\n{context}\n\n---\n\nВопрос: {query}"
+        ),
+    }

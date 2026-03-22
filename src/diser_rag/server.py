@@ -1,4 +1,10 @@
-"""Diser RAG — FastAPI server."""
+"""Diser RAG — FastAPI server.
+
+/ask  → returns context chunks for agent-side synthesis (no server LLM calls, SC-036 pattern)
+/search → semantic search, returns raw chunks
+/index  → index/reindex briefs
+/health → status
+"""
 
 import sys
 import os
@@ -15,9 +21,9 @@ from loguru import logger
 from src.diser_rag import config
 from src.diser_rag.indexer import index as run_index
 from src.diser_rag.searcher import Searcher
-from src.diser_rag.synthesizer import synthesize
+from src.diser_rag.synthesizer import get_context
 
-app = FastAPI(title="Diser RAG", version="1.0.0")
+app = FastAPI(title="Diser RAG", version="1.1.0")
 _searcher: Searcher | None = None
 
 
@@ -28,12 +34,13 @@ def get_searcher() -> Searcher:
     return _searcher
 
 
-# --- Models ---
+# --- Request models ---
 
 class AskRequest(BaseModel):
     query: str
     domain: str | None = None
     swarm: str | None = None
+    top_k: int | None = None   # override default top_k if needed
 
 class SearchRequest(BaseModel):
     query: str
@@ -54,6 +61,7 @@ def health():
         "status": "ok",
         "chunks": s._collection.count(),
         "briefs_dir": config.BRIEFS_DIR,
+        "version": "1.1.0",
     }
 
 
@@ -86,10 +94,24 @@ def search_endpoint(req: SearchRequest):
 
 @app.post("/ask")
 def ask_endpoint(req: AskRequest):
+    """Return context for agent-side synthesis.
+
+    Response:
+      found         — True if relevant chunks found
+      context       — assembled text from top-k chunks
+      sources       — list of source briefs with metadata
+      chunks_count  — number of chunks in context
+      system_prompt — system prompt to use when generating the answer
+      user_prompt   — ready-made user message: context + question
+
+    The agent calls this endpoint, then generates the answer using its own LLM.
+    No server-side LLM calls (SC-036 pattern — LLM stays on agent side).
+    """
     s = get_searcher()
-    return synthesize(req.query, s, domain=req.domain, swarm=req.swarm)
+    top_k = req.top_k or config.TOP_K
+    return get_context(req.query, s, domain=req.domain, swarm=req.swarm)
 
 
 if __name__ == "__main__":
-    logger.info(f"Starting Diser RAG on port {config.SERVER_PORT}")
+    logger.info(f"Starting Diser RAG v1.1 on port {config.SERVER_PORT}")
     uvicorn.run(app, host="0.0.0.0", port=config.SERVER_PORT)
