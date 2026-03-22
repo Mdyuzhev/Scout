@@ -120,3 +120,68 @@ def index(
     total = collection.count()
     logger.info(f"Indexing done: indexed={indexed}, skipped={skipped}, total_chunks={total}")
     return {"indexed": indexed, "skipped": skipped, "total_chunks": total}
+
+
+def index_text(
+    text: str,
+    brief_id: str,
+    swarm: str,
+    topic: str,
+    domain: str | None = None,
+) -> dict:
+    """Index a single brief from text string (no filesystem read).
+
+    Called by scout_save_brief via POST /index_brief — no disk access needed.
+    Returns: indexed, skipped, total_chunks, brief_id.
+    """
+    chroma_path = config.CHROMA_PATH
+    Path(chroma_path).mkdir(parents=True, exist_ok=True)
+
+    client = chromadb.PersistentClient(path=chroma_path)
+    ef = SentenceTransformerEmbeddingFunction(model_name=config.EMBEDDING_MODEL)
+    collection = client.get_or_create_collection(
+        name=config.COLLECTION,
+        embedding_function=ef,
+        metadata={"embedding_model": config.EMBEDDING_MODEL},
+    )
+
+    existing_ids = set(collection.get()["ids"]) if collection.count() > 0 else set()
+    resolved_domain = domain or config.DOMAIN_MAP.get(swarm, "general")
+
+    chunks = _chunk_by_h2(text)
+    if not chunks:
+        chunks = [("0", text)]
+
+    meta_base = {
+        "swarm":    swarm,
+        "brief_id": brief_id,
+        "topic":    topic,
+        "domain":   resolved_domain,
+        "source":   f"{brief_id}_{topic}.md",
+    }
+
+    ids, docs, metas = [], [], []
+    skipped = 0
+    for section_num, chunk_text in chunks:
+        doc_id = f"{brief_id}__s{section_num}"
+        if doc_id in existing_ids:
+            skipped += 1
+            continue
+        ids.append(doc_id)
+        docs.append(chunk_text)
+        metas.append({**meta_base, "section": section_num})
+
+    if ids:
+        collection.add(ids=ids, documents=docs, metadatas=metas)
+
+    total = collection.count()
+    logger.info(
+        "index_text: brief_id={} indexed={} skipped={} total={}",
+        brief_id, len(ids), skipped, total,
+    )
+    return {
+        "indexed":      len(ids),
+        "skipped":      skipped,
+        "total_chunks": total,
+        "brief_id":     brief_id,
+    }
