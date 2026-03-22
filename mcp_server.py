@@ -5,6 +5,8 @@ import os
 import traceback
 from uuid import UUID, uuid4
 
+import httpx
+
 from fastmcp import FastMCP
 from loguru import logger
 
