@@ -20,5 +20,6 @@ DOMAIN_MAP: dict[str, str] = {
     "swarm_v5": "python-td",
     "swarm_v6": "ru-ai-se",
     "swarm_v7": "se-measurement-history",
+    "dissercat": "ru-dissertations",
     "synthesis": "synthesis",
 }
